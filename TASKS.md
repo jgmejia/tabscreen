@@ -282,12 +282,10 @@ Xorg testing or installer work.**
 - [ ] Continuous streaming: measure latency and achieved frame rate against
       the Phase 0 AOA throughput ceiling; tune encode bitrate/resolution.
 
-## Phase 4 — Input Injection
+## Phase 4 — Input Injection ✅ Complete (2026-08-19)
 
-Not blocked by Phase 2 — built and unit-tested (2026-08-19), but **not yet
-validated against the real tablet** (unlike Phase 1, which was validated
-live) since that requires a working end-to-end session. Re-verify against
-real hardware once Phase 2/3 exist, or by wiring up a throwaway test client.
+Not blocked by Phase 2 — built, unit-tested, and validated live against the
+real HONOR Pad X8a.
 
 - [x] Define input event schema: `TOUCH` message on the `INPUT` channel
       (not `CONTROL` — that channel was already reserved for this in
@@ -315,13 +313,22 @@ real hardware once Phase 2/3 exist, or by wiring up a throwaway test client.
       getmouselocation` that the cursor moved to the exact expected pixel
       (screen center, `1280,800` on this `2560x1600` display) — deleted
       after confirming, not part of the shipped code.
-- [ ] Verify the *full* path end-to-end: touches from the real tablet,
-      over USB, actually move/click the host's pointer. Needs the tablet
-      connected and a live session (not required for the above, which only
-      exercised the host's X11 half).
+- [x] Verify the *full* path end-to-end against the real tablet
+      (2026-08-19): connected the HONOR Pad X8a, host auto-completed the
+      AOA handshake and CONTROL `HELLO`/`HELLO_ACK` with no manual steps
+      (Phase 1's reconnect logic already handled this). Dragging a finger
+      on the tablet moved the host's real cursor in real time (watched via
+      `xdotool getmouselocation` — coordinates tracked the drag). A tap
+      produced a genuine `ButtonPress`/`ButtonRelease` pair on the XTEST
+      virtual pointer device, confirmed via `xinput test-xi2 --root`
+      (cross-checked the detection method against a self-generated
+      `xdotool click` first, so the absence of an event would have meant
+      something). No errors in the host log throughout.
 - [ ] Verify coordinate mapping is correct across output position/rotation
       changes made via arandr — blocked on Phase 2 (no dummy output to
       reposition yet).
+
+Phase 4 is otherwise complete; the remaining item is blocked on Phase 2.
 
 ## Phase 5 — Mode Negotiation
 
