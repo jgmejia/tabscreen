@@ -215,10 +215,47 @@ unlock/USB-mode prompts.
 
 ## Phase 2 — Virtual Display (X11 RandR)
 
-- [ ] Write installer step that adds a `xf86-video-dummy` Xorg config
-      snippet — confirmed one `Device` section yields 16 outputs
-      (`DUMMY0`-`DUMMY15`) for free, so no need to hand-declare more than
-      one (see Phase 0 findings).
+**Incident (2026-08-18):** an early attempt applied a bare dummy-driver Xorg
+snippet directly to the live GDM/GNOME session (not the isolated `Xorg :2`
+spike instance) and froze the desktop hard enough to require a blind
+`sudo rm` of the file and `sudo shutdown now` to recover. See
+[docs/adr/0005-live-session-dummy-output-hazard.md](docs/adr/0005-live-session-dummy-output-hazard.md).
+
+**Blocker (2026-08-19):** four systematic follow-up tests against an
+isolated `Xorg :2` secondary instance (never the live session) all failed to
+get `xf86-video-dummy` to coexist with a real GPU in one Xorg config —
+including the corrected RandR 1.4 `Inactive`-GPU pattern that 0005 proposed.
+The dummy screen is dropped (`Screen 1 deleted because of no matching config
+section`) regardless of which real GPU it's paired with or which
+`ServerLayout` shape is used; this now looks like a real
+driver/Xorg-version compatibility gap (Ubuntu 24.04's `xserver-xorg-core`
+1.21.1.11), not a config mistake. Separately: both of this machine's real
+GPUs (Intel *and* NVIDIA) are already claimed for modesetting authority by
+the live GDM session, so there is no real GPU left that's safe to test an
+active competing `Screen` against from a second process — the
+`Xorg :2`-on-a-spare-VT isolation technique used since Phase 0 can no longer
+validate the actual merge target on this hardware. Full details, all four
+test logs' findings, and next-step options in
+[docs/adr/0006-dummy-driver-multi-gpu-binding-failure.md](docs/adr/0006-dummy-driver-multi-gpu-binding-failure.md).
+**Phase 2 is blocked on resolving this before any further live-hardware
+Xorg testing or installer work.**
+
+- [ ] Research whether a newer/patched `xf86-video-dummy` build, or an
+      alternative virtual-display driver (e.g. `evdi`, a purpose-built
+      virtual KMS driver), supports binding as a secondary/offload GPU
+      screen — ADR 0006's finding 1.
+- [ ] Decide on a validation strategy that doesn't require contending with
+      this machine's already-claimed real GPUs (e.g. a VM, or a different
+      test machine) — ADR 0006's finding 2.
+- [ ] Once a working driver/approach is found: re-validate the combined
+      config shape before it ever touches `/etc/X11/xorg.conf.d/` on the
+      live session.
+- [ ] Write installer step that adds the validated `xf86-video-dummy` Xorg
+      config snippet — confirmed one `Device` section yields 16 outputs
+      (`DUMMY0`-`DUMMY15`) for free when used standalone, so no need to
+      hand-declare more than one (see Phase 0 findings). Installer should
+      derive the real GPU's `BusID` from `lspci` at install time rather than
+      hardcoding it.
 - [ ] Host daemon: on tablet connect, run `xrandr --newmode <name> <modeline>`
       + `--addmode DUMMYn <name>` **before** `--mode`/`--auto` — confirmed
       `--auto` alone does not activate a non-`DUMMY0` output, since it has
