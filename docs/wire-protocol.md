@@ -62,6 +62,31 @@ supports. A version mismatch is logged, not treated as fatal in v1 (only
 one version exists) — future versions should define real negotiation
 behavior here rather than assuming this stays trivial forever.
 
+## VIDEO channel messages (Phase 3 scope)
+
+Host → client only. Unlike `CONTROL`/`INPUT`, there's no message-type byte
+here — every `VIDEO` payload is exactly **one Annex-B H.264 NAL unit**,
+start code included (either the 3-byte `00 00 01` or 4-byte `00 00 00 01`
+form, whichever the encoder emitted), in encode order: parameter sets
+(SPS/PPS) first, then each frame's slice NAL(s). One NAL unit per frame
+keeps the client's decoder feed aligned to NAL boundaries without needing
+to buffer/re-split an arbitrary byte stream itself — `MediaCodec` on
+Android is fed one `queueInputBuffer` call per received `VIDEO` frame.
+
+Host-side capture target: until Phase 2 lands, there's no dummy RandR
+output to target, so v1 captures the **current default X11 screen**
+instead (`host/src/video.rs`) — the same placeholder-target approach
+`host/src/input.rs` already uses for pointer injection, for the same
+reason (ADR 0006). Encoding is hardware-accelerated H.264 via VAAPI on the
+Intel iGPU, matching the codec baseline in
+[ADR-0003](adr/0003-video-codec-baseline.md) and the empirical VAAPI
+validation in [ADR-0004](adr/0004-target-scope-v1.md). v1 shells out to
+`ffmpeg` (`-f x11grab` capture piped into `-c:v h264_vaapi` encode, raw
+Annex-B `-f h264` output) rather than reimplementing X11 capture and VAAPI
+encoding directly in Rust — Phase 0 already validated this exact pipeline
+shape empirically against this hardware, so re-deriving it in raw
+Rust/libva bindings would be substantial, avoidable engineering for v1.
+
 ## INPUT channel messages (Phase 4 scope)
 
 Client → host only. Each `INPUT` payload starts with a 1-byte message type,

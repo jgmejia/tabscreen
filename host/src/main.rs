@@ -1,8 +1,11 @@
 mod aoa;
 mod input;
 mod protocol;
+mod video;
 
 use protocol::{control, Channel, Frame, FrameReader};
+use rusb::{DeviceHandle, GlobalContext};
+use std::sync::Arc;
 use std::time::Duration;
 
 fn main() {
@@ -53,14 +56,30 @@ fn run_one_connection(injector: Option<&input::Injector>) -> anyhow::Result<()> 
         conn.ep_out
     );
 
+    let handle = Arc::new(conn.handle);
+    let ep_in = conn.ep_in;
+    let ep_out = conn.ep_out;
+
     let hello = protocol::encode_frame(Channel::Control, &control::encode_hello(1))?;
-    conn.handle.write_bulk(conn.ep_out, &hello, Duration::from_secs(10))?;
+    handle.write_bulk(ep_out, &hello, Duration::from_secs(10))?;
     log::info!("sent HELLO");
+
+    match video::spawn_encoder() {
+        Ok(stream) => {
+            let video_handle = handle.clone();
+            // Self-terminating: exits (and stops ffmpeg) once a write fails,
+            // which happens naturally once this connection ends — not
+            // joined here, so a brief overlap with the next connection
+            // cycle's own video thread is possible but harmless.
+            std::thread::spawn(move || video_writer_loop(video_handle, ep_out, stream));
+        }
+        Err(e) => log::warn!("video capture/encode unavailable, streaming disabled: {e:#}"),
+    }
 
     let mut reader = FrameReader::new();
     let mut buf = [0u8; 16384];
     loop {
-        match conn.handle.read_bulk(conn.ep_in, &mut buf, Duration::from_secs(30)) {
+        match handle.read_bulk(ep_in, &mut buf, Duration::from_secs(30)) {
             Ok(n) => {
                 reader.feed(&buf[..n]);
                 while let Some(frame) = reader.try_read_frame()? {
@@ -69,6 +88,28 @@ fn run_one_connection(injector: Option<&input::Injector>) -> anyhow::Result<()> 
             }
             Err(rusb::Error::Timeout) => continue,
             Err(e) => return Err(e.into()),
+        }
+    }
+}
+
+fn video_writer_loop(handle: Arc<DeviceHandle<GlobalContext>>, ep_out: u8, stream: video::VideoStream) {
+    loop {
+        let Some(nal) = stream.recv() else {
+            log::warn!("video encoder ended (ffmpeg exited)");
+            stream.stop();
+            return;
+        };
+        let frame = match protocol::encode_frame(Channel::Video, &nal) {
+            Ok(f) => f,
+            Err(e) => {
+                log::warn!("failed to encode VIDEO frame: {e:#}");
+                continue;
+            }
+        };
+        if let Err(e) = handle.write_bulk(ep_out, &frame, Duration::from_secs(5)) {
+            log::warn!("video write failed, stopping encoder: {e:#}");
+            stream.stop();
+            return;
         }
     }
 }

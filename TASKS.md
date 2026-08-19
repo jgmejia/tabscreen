@@ -266,21 +266,50 @@ Xorg testing or installer work.**
 - [ ] Handle the "no free dummy output available" case (e.g. second tablet,
       or dummy outputs not pre-provisioned) with a clear error.
 
-## Phase 3 — Video Pipeline
+## Phase 3 — Video Pipeline ✅ Core pipeline validated live (2026-08-19)
 
-- [ ] Host: capture the dummy output's framebuffer (X11 capture of that
-      specific RandR output/CRTC, not the whole desktop).
-- [ ] Host: hardware-accelerated H.264 encode of the captured frames via
-      VAAPI on the Intel Quick Sync iGPU.
-- [ ] Host: send encoded frames over the Phase 1 transport's video channel.
-- [ ] Android: decode via `MediaCodec` (hardware decoder — confirmed
-      `c2.qti.avc.decoder.low_latency` exists on the target tablet, prefer
-      it explicitly over the default variant), render fullscreen
-      (`SurfaceView`/`TextureView`).
-- [ ] Static-image end-to-end test: single frame captured → encoded → sent
-      → decoded → displayed.
-- [ ] Continuous streaming: measure latency and achieved frame rate against
-      the Phase 0 AOA throughput ceiling; tune encode bitrate/resolution.
+Not blocked by Phase 2 — captures the host's own current screen as a
+stand-in target (same placeholder approach `host/src/input.rs` already
+used for Phase 4, per [ADR 0006](docs/adr/0006-dummy-driver-multi-gpu-binding-failure.md)).
+Getting the Android decode side working against the real tablet took five
+separate, initially-indistinguishable failure modes to work through —
+full writeup in
+[docs/adr/0007-mediacodec-low-latency-decoder-constraints.md](docs/adr/0007-mediacodec-low-latency-decoder-constraints.md).
+Validated live: 1680 frames received, 1623 released, zero errors over a
+sustained ~28s test, tablet visibly mirroring the host's desktop in real
+time.
+
+- [x] Host: hardware-accelerated H.264 encode via VAAPI on the Intel iGPU.
+      `host/src/video.rs` shells out to `ffmpeg` (x11grab capture +
+      `h264_vaapi` encode, `-bf 0`/`-sei 0` tuned per ADR 0007) rather than
+      reimplementing X11 capture and VAAPI encoding directly in Rust —
+      Phase 0 already validated this exact pipeline shape empirically.
+      Encode width is capped (`MAX_ENCODE_WIDTH`, currently 1280) since the
+      host's own screen can exceed the tablet's real decoder capability
+      (ADR 0007 finding 5); this stops mattering once Phase 2's dummy
+      output (sized to the tablet's own panel) replaces this stand-in.
+- [x] Host: send encoded frames over the Phase 1 transport's video channel
+      — one Annex-B NAL unit per `VIDEO` frame, defined in
+      `docs/wire-protocol.md`'s new VIDEO section.
+- [x] Android: decode via `MediaCodec`, explicitly selecting
+      `c2.qti.avc.decoder.low_latency` over the platform default
+      (`VideoDecoder.selectDecoder()`), render fullscreen via
+      `SurfaceView`. Required a dedicated output-draining thread decoupled
+      from input feed cadence — inline polling starves this decoder's
+      minimal internal pipeline and silently faults it under real load
+      (ADR 0007 finding 4); this is now the standing pattern for any
+      future `MediaCodec` consumer in this codebase.
+- [x] Static-image + continuous streaming end-to-end test: validated live
+      against the real HONOR Pad X8a (see above) — a single static frame
+      wasn't tested in isolation, but continuous streaming succeeding is a
+      strictly harder bar.
+- [ ] Rigorous latency measurement (e.g. timestamped round trip) and
+      formal bitrate/resolution tuning against the Phase 0 AOA throughput
+      ceiling — not done yet; current settings (8Mbps, 1280px-wide,
+      30fps target) were validated for stability, not tuned for quality
+      or measured for latency.
+- [ ] Capture the *dummy output's* framebuffer specifically (not the
+      host's whole current screen) — blocked on Phase 2.
 
 ## Phase 4 — Input Injection ✅ Complete (2026-08-19)
 

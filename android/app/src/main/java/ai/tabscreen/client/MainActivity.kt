@@ -21,6 +21,8 @@ import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import android.view.MotionEvent
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import android.view.View
 import android.widget.FrameLayout
 import android.widget.TextView
@@ -32,14 +34,14 @@ private const val ACTION_USB_PERMISSION = "ai.tabscreen.client.USB_PERMISSION"
 private const val PROTOCOL_VERSION = 1
 
 /**
- * Phase 1/4 scope: opens the AOA accessory, completes the CONTROL
- * HELLO/HELLO_ACK handshake (docs/wire-protocol.md), captures touch input
- * over the whole window and sends it on the INPUT channel. There's no video
- * surface yet (Phase 3), so touches are captured against the full window
- * rather than a specific SurfaceView for now.
+ * Phase 1/3/4 scope: opens the AOA accessory, completes the CONTROL
+ * HELLO/HELLO_ACK handshake (docs/wire-protocol.md), decodes and renders
+ * the VIDEO channel fullscreen, and captures touch input over the whole
+ * window and sends it on the INPUT channel.
  */
 class MainActivity : Activity() {
     private lateinit var statusView: TextView
+    private lateinit var surfaceView: SurfaceView
     private lateinit var usbManager: UsbManager
     private var fd: ParcelFileDescriptor? = null
     private var readerThread: Thread? = null
@@ -47,6 +49,22 @@ class MainActivity : Activity() {
     @Volatile private var pollingActive = false
     @Volatile private var output: FileOutputStream? = null
     private val outputLock = Any()
+    @Volatile private var videoDecoder: VideoDecoder? = null
+    @Volatile private var videoFrameCount = 0
+    @Volatile private var connectionStatus = "Starting..."
+
+    private val surfaceCallback = object : SurfaceHolder.Callback {
+        override fun surfaceCreated(holder: SurfaceHolder) {
+            videoDecoder = VideoDecoder(holder.surface)
+        }
+
+        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
+
+        override fun surfaceDestroyed(holder: SurfaceHolder) {
+            videoDecoder?.release()
+            videoDecoder = null
+        }
+    }
 
     // Confirmed in Phase 0: the accessory-attached intent-filter doesn't
     // reliably bring this app to the foreground on MagicOS, even though
@@ -92,8 +110,16 @@ class MainActivity : Activity() {
         statusView = TextView(this)
         statusView.textSize = 20f
         statusView.setPadding(32, 64, 32, 32)
+        // Explicit colors: the default theme's text color is easy to lose
+        // against the SurfaceView's black background otherwise.
+        statusView.setTextColor(android.graphics.Color.WHITE)
+        statusView.setBackgroundColor(0x80000000.toInt())
+
+        surfaceView = SurfaceView(this)
+        surfaceView.holder.addCallback(surfaceCallback)
 
         val root = FrameLayout(this)
+        root.addView(surfaceView)
         root.addView(statusView)
         root.setOnTouchListener { view, event -> handleTouch(view, event) }
         setContentView(root)
@@ -274,13 +300,33 @@ class MainActivity : Activity() {
                     val hostVersion = frame.payload.getOrNull(1)?.toInt()?.and(0xFF) ?: 0
                     Log.i(TAG, "received HELLO, host protocol_version=$hostVersion")
                     sendFrame(encodeFrame(Channel.CONTROL, Control.encodeHelloAck(PROTOCOL_VERSION)))
-                    setStatus("Connected\nHandshake complete (host v$hostVersion)")
+                    connectionStatus = "Connected\nHandshake complete (host v$hostVersion)"
+                    refreshStatus()
                 } else {
                     Log.w(TAG, "unexpected control payload: ${frame.payload.joinToString()}")
                 }
             }
+            Channel.VIDEO -> {
+                videoDecoder?.feed(frame.payload)
+                videoFrameCount++
+                // logcat is confirmed unreliable on this device/OS (Phase 0)
+                // -- the on-screen counter is the debuggable signal instead.
+                // Throttled since setStatus() posts to the UI thread.
+                if (videoFrameCount % 30 == 0) refreshStatus()
+            }
             else -> Log.w(TAG, "unexpected channel: ${frame.channel} (${frame.payload.size} bytes)")
         }
+    }
+
+    private fun refreshStatus() {
+        val decoder = videoDecoder
+        val decoderLine = if (decoder != null) {
+            "\ndecoder: ${decoder.attempted}\nreleased=${decoder.outputBuffersReleased} errors=${decoder.errorCount}" +
+                (decoder.lastError?.let { "\nlast=$it" } ?: "")
+        } else {
+            "\ndecoder: not started"
+        }
+        setStatus("$connectionStatus\nvideo frames received: $videoFrameCount$decoderLine")
     }
 
     private fun setStatus(s: String) {
@@ -296,5 +342,7 @@ class MainActivity : Activity() {
             // ignore
         }
         closeConnection()
+        videoDecoder?.release()
+        videoDecoder = null
     }
 }
