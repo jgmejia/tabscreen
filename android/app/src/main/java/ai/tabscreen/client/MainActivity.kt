@@ -4,6 +4,9 @@ import ai.tabscreen.client.protocol.Channel
 import ai.tabscreen.client.protocol.Control
 import ai.tabscreen.client.protocol.Frame
 import ai.tabscreen.client.protocol.FrameReader
+import ai.tabscreen.client.protocol.Input
+import ai.tabscreen.client.protocol.TouchAction
+import ai.tabscreen.client.protocol.TouchEvent
 import ai.tabscreen.client.protocol.encodeFrame
 import android.app.Activity
 import android.app.PendingIntent
@@ -17,6 +20,9 @@ import android.os.Build
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import android.view.MotionEvent
+import android.view.View
+import android.widget.FrameLayout
 import android.widget.TextView
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -26,9 +32,11 @@ private const val ACTION_USB_PERMISSION = "ai.tabscreen.client.USB_PERMISSION"
 private const val PROTOCOL_VERSION = 1
 
 /**
- * Phase 1 scope only: opens the AOA accessory, completes the CONTROL
- * HELLO/HELLO_ACK handshake (docs/wire-protocol.md), and logs anything
- * else. VIDEO/INPUT channel handling arrive in Phase 3/4.
+ * Phase 1/4 scope: opens the AOA accessory, completes the CONTROL
+ * HELLO/HELLO_ACK handshake (docs/wire-protocol.md), captures touch input
+ * over the whole window and sends it on the INPUT channel. There's no video
+ * surface yet (Phase 3), so touches are captured against the full window
+ * rather than a specific SurfaceView for now.
  */
 class MainActivity : Activity() {
     private lateinit var statusView: TextView
@@ -37,6 +45,8 @@ class MainActivity : Activity() {
     private var readerThread: Thread? = null
     private var pollThread: Thread? = null
     @Volatile private var pollingActive = false
+    @Volatile private var output: FileOutputStream? = null
+    private val outputLock = Any()
 
     // Confirmed in Phase 0: the accessory-attached intent-filter doesn't
     // reliably bring this app to the foreground on MagicOS, even though
@@ -82,7 +92,11 @@ class MainActivity : Activity() {
         statusView = TextView(this)
         statusView.textSize = 20f
         statusView.setPadding(32, 64, 32, 32)
-        setContentView(statusView)
+
+        val root = FrameLayout(this)
+        root.addView(statusView)
+        root.setOnTouchListener { view, event -> handleTouch(view, event) }
+        setContentView(root)
         setStatus("Starting...")
 
         usbManager = getSystemService(USB_SERVICE) as UsbManager
@@ -172,8 +186,8 @@ class MainActivity : Activity() {
         setStatus("Connected. Waiting for HELLO...")
 
         val input = FileInputStream(pfd.fileDescriptor)
-        val output = FileOutputStream(pfd.fileDescriptor)
-        readerThread = Thread { runReadLoop(input, output) }
+        output = FileOutputStream(pfd.fileDescriptor)
+        readerThread = Thread { runReadLoop(input) }
         readerThread?.start()
     }
 
@@ -181,6 +195,7 @@ class MainActivity : Activity() {
     private fun closeConnection() {
         readerThread?.interrupt()
         readerThread = null
+        output = null
         try {
             fd?.close()
         } catch (e: Exception) {
@@ -189,7 +204,43 @@ class MainActivity : Activity() {
         fd = null
     }
 
-    private fun runReadLoop(input: FileInputStream, output: FileOutputStream) {
+    /**
+     * The accessory's output stream is written from both the reader thread
+     * (HELLO_ACK) and the UI thread (touch events) — synchronized so two
+     * writes never interleave their bytes on the wire.
+     */
+    private fun sendFrame(bytes: ByteArray) {
+        synchronized(outputLock) {
+            try {
+                output?.write(bytes)
+            } catch (e: Exception) {
+                Log.e(TAG, "error writing frame", e)
+            }
+        }
+    }
+
+    /**
+     * No SurfaceView yet (Phase 3), so touches are captured against the
+     * whole window and normalized by its size — matches what the wire
+     * protocol expects (docs/wire-protocol.md's INPUT channel).
+     */
+    private fun handleTouch(view: View, event: MotionEvent): Boolean {
+        val action = when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> TouchAction.DOWN
+            MotionEvent.ACTION_MOVE -> TouchAction.MOVE
+            MotionEvent.ACTION_UP -> TouchAction.UP
+            MotionEvent.ACTION_CANCEL -> TouchAction.CANCEL
+            else -> return false
+        }
+        val xNorm = (event.x / view.width).coerceIn(0f, 1f)
+        val yNorm = (event.y / view.height).coerceIn(0f, 1f)
+        val pressure = if (action == TouchAction.UP || action == TouchAction.CANCEL) 0f else event.pressure
+        val touch = TouchEvent(action, pointerId = 0, x = xNorm, y = yNorm, pressure = pressure)
+        sendFrame(encodeFrame(Channel.INPUT, Input.encodeTouch(touch)))
+        return true
+    }
+
+    private fun runReadLoop(input: FileInputStream) {
         val reader = FrameReader()
         val buf = ByteArray(16384)
         try {
@@ -202,7 +253,7 @@ class MainActivity : Activity() {
                 reader.feed(buf, n)
                 while (true) {
                     val frame = reader.tryReadFrame() ?: break
-                    handleFrame(frame, output)
+                    handleFrame(frame)
                 }
             }
         } catch (e: Exception) {
@@ -216,20 +267,19 @@ class MainActivity : Activity() {
         startPolling()
     }
 
-    private fun handleFrame(frame: Frame, output: FileOutputStream) {
+    private fun handleFrame(frame: Frame) {
         when (frame.channel) {
             Channel.CONTROL -> {
                 if (frame.payload.isNotEmpty() && (frame.payload[0].toInt() and 0xFF) == Control.HELLO) {
                     val hostVersion = frame.payload.getOrNull(1)?.toInt()?.and(0xFF) ?: 0
                     Log.i(TAG, "received HELLO, host protocol_version=$hostVersion")
-                    val ack = encodeFrame(Channel.CONTROL, Control.encodeHelloAck(PROTOCOL_VERSION))
-                    output.write(ack)
+                    sendFrame(encodeFrame(Channel.CONTROL, Control.encodeHelloAck(PROTOCOL_VERSION)))
                     setStatus("Connected\nHandshake complete (host v$hostVersion)")
                 } else {
                     Log.w(TAG, "unexpected control payload: ${frame.payload.joinToString()}")
                 }
             }
-            else -> Log.w(TAG, "unexpected channel in Phase 1: ${frame.channel} (${frame.payload.size} bytes)")
+            else -> Log.w(TAG, "unexpected channel: ${frame.channel} (${frame.payload.size} bytes)")
         }
     }
 

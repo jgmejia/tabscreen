@@ -89,3 +89,66 @@ object Control {
     fun encodeHello(protocolVersion: Int): ByteArray = byteArrayOf(HELLO.toByte(), protocolVersion.toByte())
     fun encodeHelloAck(protocolVersion: Int): ByteArray = byteArrayOf(HELLO_ACK.toByte(), protocolVersion.toByte())
 }
+
+enum class TouchAction(val byte: Int) {
+    DOWN(0), MOVE(1), UP(2), CANCEL(3);
+
+    companion object {
+        fun fromByte(b: Int): TouchAction? = values().find { it.byte == b }
+    }
+}
+
+data class TouchEvent(val action: TouchAction, val pointerId: Int, val x: Float, val y: Float, val pressure: Float)
+
+/**
+ * Client -> host only (docs/wire-protocol.md's INPUT channel). x/y are
+ * normalized 0.0-1.0 relative to this device's screen, not raw pixels, so
+ * the host can map onto whatever the target output's pixel rect is without
+ * the client needing to know the host's resolution.
+ */
+object Input {
+    const val TOUCH: Int = 0x01
+    private const val TOUCH_LEN = 15
+
+    fun encodeTouch(ev: TouchEvent): ByteArray {
+        val out = ByteArray(TOUCH_LEN)
+        out[0] = TOUCH.toByte()
+        out[1] = ev.action.byte.toByte()
+        out[2] = ev.pointerId.toByte()
+        writeFloatLE(out, 3, ev.x)
+        writeFloatLE(out, 7, ev.y)
+        writeFloatLE(out, 11, ev.pressure)
+        return out
+    }
+
+    fun decodeTouch(payload: ByteArray): TouchEvent {
+        require(payload.size >= TOUCH_LEN && (payload[0].toInt() and 0xFF) == TOUCH) {
+            "malformed TOUCH payload"
+        }
+        val action = TouchAction.fromByte(payload[1].toInt() and 0xFF)
+            ?: throw IllegalArgumentException("unknown touch action byte ${payload[1]}")
+        return TouchEvent(
+            action = action,
+            pointerId = payload[2].toInt() and 0xFF,
+            x = readFloatLE(payload, 3),
+            y = readFloatLE(payload, 7),
+            pressure = readFloatLE(payload, 11),
+        )
+    }
+
+    private fun writeFloatLE(out: ByteArray, offset: Int, value: Float) {
+        val bits = value.toRawBits()
+        out[offset] = (bits and 0xFF).toByte()
+        out[offset + 1] = ((bits shr 8) and 0xFF).toByte()
+        out[offset + 2] = ((bits shr 16) and 0xFF).toByte()
+        out[offset + 3] = ((bits shr 24) and 0xFF).toByte()
+    }
+
+    private fun readFloatLE(b: ByteArray, offset: Int): Float {
+        val bits = (b[offset].toInt() and 0xFF) or
+            ((b[offset + 1].toInt() and 0xFF) shl 8) or
+            ((b[offset + 2].toInt() and 0xFF) shl 16) or
+            ((b[offset + 3].toInt() and 0xFF) shl 24)
+        return Float.fromBits(bits)
+    }
+}

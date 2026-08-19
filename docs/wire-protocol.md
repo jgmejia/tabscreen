@@ -62,6 +62,38 @@ supports. A version mismatch is logged, not treated as fatal in v1 (only
 one version exists) — future versions should define real negotiation
 behavior here rather than assuming this stays trivial forever.
 
+## INPUT channel messages (Phase 4 scope)
+
+Client → host only. Each `INPUT` payload starts with a 1-byte message type,
+same pattern as `CONTROL`, for the same forward-compatibility reason (room
+for e.g. key/scroll events later without a new channel).
+
+| Type | Name | Body |
+|---|---|---|
+| 0x01 | `TOUCH` | `action: u8, pointer_id: u8, x: f32LE, y: f32LE, pressure: f32LE` (15 bytes) |
+
+- `action`: `0` = down, `1` = move, `2` = up, `3` = cancel (mirrors Android's
+  `MotionEvent` action set, minus the multi-pointer index/mask bits — v1
+  tracks one active pointer per `pointer_id`).
+- `pointer_id`: reserved for multi-touch; v1's client only ever sends `0`
+  (the primary pointer), but the field exists now so a multi-touch client
+  update doesn't need a wire-format change later.
+- `x`, `y`: **normalized 0.0-1.0** relative to the tablet's reported screen
+  dimensions, not raw pixels. This is deliberate: the host maps normalized
+  coordinates onto whatever the target output's actual pixel rect is at
+  injection time, so the client never needs to know the host's screen
+  resolution, and the mapping keeps working across arandr
+  position/rotation/resolution changes (Phase 5) without a protocol change.
+- `pressure`: normalized 0.0-1.0. Plain touch reports `1.0`; a stylus (if
+  the tablet supports one) reports its real pressure value. `0.0` on `up`/
+  `cancel`.
+
+Host-side injection target: until Phase 2 lands, there's no dummy output to
+map onto, so v1's host injects against the current default screen instead
+(see `host/src/input.rs`) — the normalized-coordinate design means this
+becomes "target the dummy output's rect instead of the default screen's"
+with no wire-format change once Phase 2 unblocks.
+
 ## Design notes / consequences
 
 - No checksum/CRC on top of the frame: USB bulk transfers already have

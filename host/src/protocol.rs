@@ -120,6 +120,84 @@ pub mod control {
     }
 }
 
+pub mod input {
+    pub const TOUCH: u8 = 0x01;
+    const TOUCH_LEN: usize = 15;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum TouchAction {
+        Down,
+        Move,
+        Up,
+        Cancel,
+    }
+
+    impl TouchAction {
+        fn from_byte(b: u8) -> Option<Self> {
+            match b {
+                0 => Some(TouchAction::Down),
+                1 => Some(TouchAction::Move),
+                2 => Some(TouchAction::Up),
+                3 => Some(TouchAction::Cancel),
+                _ => None,
+            }
+        }
+
+        // Only the client (Kotlin) encodes touch events at runtime; this
+        // half exists for wire-format symmetry and is exercised by tests.
+        #[allow(dead_code)]
+        fn to_byte(self) -> u8 {
+            match self {
+                TouchAction::Down => 0,
+                TouchAction::Move => 1,
+                TouchAction::Up => 2,
+                TouchAction::Cancel => 3,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct TouchEvent {
+        pub action: TouchAction,
+        pub pointer_id: u8,
+        /// Normalized 0.0-1.0 relative to the tablet's reported screen size.
+        pub x: f32,
+        /// Normalized 0.0-1.0 relative to the tablet's reported screen size.
+        pub y: f32,
+        /// Normalized 0.0-1.0; 1.0 for plain touch, real value for stylus.
+        pub pressure: f32,
+    }
+
+    // Only the client (Kotlin) encodes touch events at runtime; this half
+    // exists for wire-format symmetry and is exercised by tests.
+    #[allow(dead_code)]
+    pub fn encode_touch(ev: TouchEvent) -> Vec<u8> {
+        let mut out = Vec::with_capacity(TOUCH_LEN);
+        out.push(TOUCH);
+        out.push(ev.action.to_byte());
+        out.push(ev.pointer_id);
+        out.extend_from_slice(&ev.x.to_le_bytes());
+        out.extend_from_slice(&ev.y.to_le_bytes());
+        out.extend_from_slice(&ev.pressure.to_le_bytes());
+        out
+    }
+
+    pub fn decode_touch(payload: &[u8]) -> anyhow::Result<TouchEvent> {
+        if payload.len() < TOUCH_LEN || payload[0] != TOUCH {
+            anyhow::bail!("malformed TOUCH payload: {:?}", payload);
+        }
+        let action = TouchAction::from_byte(payload[1])
+            .ok_or_else(|| anyhow::anyhow!("unknown touch action byte {}", payload[1]))?;
+        Ok(TouchEvent {
+            action,
+            pointer_id: payload[2],
+            x: f32::from_le_bytes(payload[3..7].try_into().unwrap()),
+            y: f32::from_le_bytes(payload[7..11].try_into().unwrap()),
+            pressure: f32::from_le_bytes(payload[11..15].try_into().unwrap()),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,6 +259,46 @@ mod tests {
         let frame = reader.try_read_frame().unwrap().unwrap();
         assert_eq!(frame.payload[0], control::HELLO_ACK);
         assert_eq!(frame.payload[1], 1);
+    }
+
+    #[test]
+    fn round_trips_a_touch_event() {
+        let ev = input::TouchEvent {
+            action: input::TouchAction::Move,
+            pointer_id: 0,
+            x: 0.25,
+            y: 0.75,
+            pressure: 0.5,
+        };
+        let encoded = input::encode_touch(ev);
+        let decoded = input::decode_touch(&encoded).unwrap();
+        assert_eq!(decoded, ev);
+    }
+
+    #[test]
+    fn rejects_a_truncated_touch_payload() {
+        let ev = input::TouchEvent {
+            action: input::TouchAction::Down,
+            pointer_id: 0,
+            x: 0.0,
+            y: 0.0,
+            pressure: 1.0,
+        };
+        let encoded = input::encode_touch(ev);
+        assert!(input::decode_touch(&encoded[..encoded.len() - 1]).is_err());
+    }
+
+    #[test]
+    fn rejects_an_unknown_touch_action_byte() {
+        let mut encoded = input::encode_touch(input::TouchEvent {
+            action: input::TouchAction::Down,
+            pointer_id: 0,
+            x: 0.0,
+            y: 0.0,
+            pressure: 1.0,
+        });
+        encoded[1] = 0xEE;
+        assert!(input::decode_touch(&encoded).is_err());
     }
 
     #[test]

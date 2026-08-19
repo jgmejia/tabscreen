@@ -76,4 +76,25 @@ class FrameProtocolTest {
         assertEquals(Control.HELLO_ACK, frame.payload[0].toInt() and 0xFF)
         assertEquals(1, frame.payload[1].toInt() and 0xFF)
     }
+
+    @Test
+    fun `round trips a touch event`() {
+        val ev = TouchEvent(TouchAction.MOVE, pointerId = 0, x = 0.25f, y = 0.75f, pressure = 0.5f)
+        val encoded = Input.encodeTouch(ev)
+        val decoded = Input.decodeTouch(encoded)
+        assertEquals(ev, decoded)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `rejects a truncated touch payload`() {
+        val encoded = Input.encodeTouch(TouchEvent(TouchAction.DOWN, 0, 0f, 0f, 1f))
+        Input.decodeTouch(encoded.copyOfRange(0, encoded.size - 1))
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `rejects an unknown touch action byte`() {
+        val encoded = Input.encodeTouch(TouchEvent(TouchAction.DOWN, 0, 0f, 0f, 1f))
+        encoded[1] = 0xEE.toByte()
+        Input.decodeTouch(encoded)
+    }
 }

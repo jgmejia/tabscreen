@@ -1,4 +1,5 @@
 mod aoa;
+mod input;
 mod protocol;
 
 use protocol::{control, Channel, Frame, FrameReader};
@@ -6,8 +7,17 @@ use std::time::Duration;
 
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
+    let injector = match input::Injector::connect() {
+        Ok(i) => Some(i),
+        Err(e) => {
+            log::warn!("X11 XTEST injector unavailable, INPUT frames will be dropped: {e:#}");
+            None
+        }
+    };
+
     loop {
-        if let Err(e) = run_one_connection() {
+        if let Err(e) = run_one_connection(injector.as_ref()) {
             log::error!("connection cycle ended: {e:#}");
         }
         log::info!("retrying in 2s...");
@@ -15,7 +25,7 @@ fn main() {
     }
 }
 
-fn run_one_connection() -> anyhow::Result<()> {
+fn run_one_connection(injector: Option<&input::Injector>) -> anyhow::Result<()> {
     // A prior connection may have ended without a physical unplug (app
     // crash, permission revoked, host-side error) — in that case the
     // device is still sitting in accessory mode and there's no need (or
@@ -54,7 +64,7 @@ fn run_one_connection() -> anyhow::Result<()> {
             Ok(n) => {
                 reader.feed(&buf[..n]);
                 while let Some(frame) = reader.try_read_frame()? {
-                    handle_frame(frame);
+                    handle_frame(frame, injector);
                 }
             }
             Err(rusb::Error::Timeout) => continue,
@@ -63,7 +73,7 @@ fn run_one_connection() -> anyhow::Result<()> {
     }
 }
 
-fn handle_frame(frame: Frame) {
+fn handle_frame(frame: Frame, injector: Option<&input::Injector>) {
     match frame.channel {
         Channel::Control => {
             if frame.payload.first() == Some(&control::HELLO_ACK) {
@@ -73,8 +83,20 @@ fn handle_frame(frame: Frame) {
                 log::warn!("unexpected control payload: {:?}", frame.payload);
             }
         }
+        Channel::Input => match protocol::input::decode_touch(&frame.payload) {
+            Ok(ev) => {
+                let Some(injector) = injector else {
+                    log::warn!("dropping touch event, no injector available: {ev:?}");
+                    return;
+                };
+                if let Err(e) = injector.inject(ev) {
+                    log::error!("failed to inject touch event {ev:?}: {e:#}");
+                }
+            }
+            Err(e) => log::warn!("malformed INPUT payload: {e:#}"),
+        },
         other => log::warn!(
-            "unexpected channel in Phase 1: {other:?} ({} bytes)",
+            "unexpected channel: {other:?} ({} bytes)",
             frame.payload.len()
         ),
     }

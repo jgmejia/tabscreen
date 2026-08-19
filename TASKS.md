@@ -284,13 +284,44 @@ Xorg testing or installer work.**
 
 ## Phase 4 — Input Injection
 
-- [ ] Define input event schema (touch down/move/up, coordinates, pressure
-      if stylus-capable) on the control channel.
-- [ ] Android: capture touch/stylus events, send over USB.
-- [ ] Host: inject received events as pointer input against the dummy
-      output's coordinate space (e.g. via `uinput` or `XTestFakeMotionEvent`).
+Not blocked by Phase 2 — built and unit-tested (2026-08-19), but **not yet
+validated against the real tablet** (unlike Phase 1, which was validated
+live) since that requires a working end-to-end session. Re-verify against
+real hardware once Phase 2/3 exist, or by wiring up a throwaway test client.
+
+- [x] Define input event schema: `TOUCH` message on the `INPUT` channel
+      (not `CONTROL` — that channel was already reserved for this in
+      `docs/wire-protocol.md`'s Phase 1 channel table). `action` (down/move/
+      up/cancel), `pointer_id` (multi-touch-ready, v1 client only sends 0),
+      normalized `x`/`y` (0.0-1.0, not raw pixels — decouples the client
+      from the host's screen resolution and survives arandr repositioning
+      with no protocol change), and `pressure` (0.0-1.0, stylus-ready). See
+      `docs/wire-protocol.md`'s new INPUT section.
+- [x] Android: `MainActivity` captures touch via a whole-window
+      `setOnTouchListener` (no `SurfaceView` yet — Phase 3), normalizes by
+      window size, sends `TOUCH` frames over a newly-synchronized shared
+      output stream (previously accessed only from the reader thread).
+- [x] Host: `host/src/input.rs`'s `Injector` connects to the X server via
+      `x11rb`'s XTEST extension (`XTestFakeInput`: `MotionNotify` for
+      move, `ButtonPress`/`ButtonRelease` for down/up, button 1) and maps
+      normalized coordinates onto the **current default screen** — there's
+      no dummy output to target yet (Phase 2 blocked), so this is a
+      placeholder target; the design note in `docs/wire-protocol.md`
+      explains why swapping in the dummy output's rect later needs no wire
+      change, just a different (width, height) source in `Injector`.
+- [x] Verify the host-side XTEST injection actually moves the real pointer
+      (independent of the tablet/USB path): a throwaway `#[ignore]`d test
+      called `Injector::inject` directly and confirmed via `xdotool
+      getmouselocation` that the cursor moved to the exact expected pixel
+      (screen center, `1280,800` on this `2560x1600` display) — deleted
+      after confirming, not part of the shipped code.
+- [ ] Verify the *full* path end-to-end: touches from the real tablet,
+      over USB, actually move/click the host's pointer. Needs the tablet
+      connected and a live session (not required for the above, which only
+      exercised the host's X11 half).
 - [ ] Verify coordinate mapping is correct across output position/rotation
-      changes made via arandr.
+      changes made via arandr — blocked on Phase 2 (no dummy output to
+      reposition yet).
 
 ## Phase 5 — Mode Negotiation
 
