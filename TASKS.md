@@ -133,24 +133,85 @@ solidly validated on both ends. The minimal Android spike app lives at
       that Raptor Lake has AV1 hardware encode — it doesn't; that arrived
       later with Meteor Lake/Arc.
 
-## Phase 1 — USB Transport (AOA)
+## Phase 1 — USB Transport (AOA) ✅ Complete (2026-08-19)
 
-- [ ] Define wire protocol: length-prefixed frames, channel IDs for
-      video / input / control messages.
-- [ ] Host: implement AOA host-side handshake (accessory mode negotiation)
-      and bulk endpoint read/write.
-- [ ] Android: implement `UsbAccessory` registration (accessory filter,
+Validated end-to-end against the real host + tablet: real Rust daemon
+(`host/`) and real Kotlin client (`android/`) completing a full AOA
+handshake, `CONTROL` `HELLO`/`HELLO_ACK` exchange, and — critically —
+automatic recovery from both a software-only disconnect and a genuine
+physical unplug/replug, with no manual intervention beyond the tablet's own
+unlock/USB-mode prompts.
+
+- [x] Define wire protocol: length-prefixed frames, channel IDs for
+      video / input / control messages. See
+      [docs/wire-protocol.md](docs/wire-protocol.md); implemented
+      identically (with matching unit tests) in `host/src/protocol.rs` and
+      `android/app/.../protocol/FrameProtocol.kt`.
+- [x] Host: implement AOA host-side handshake (accessory mode negotiation)
+      and bulk endpoint read/write. `host/src/aoa.rs`. Real finding: Rust
+      issues the GET_PROTOCOL/SEND_STRING×6/START_ACCESSORY control
+      transfers essentially back-to-back, far faster than the Python probe
+      (which had interpreter overhead between calls) — without a ~100ms
+      delay between each control transfer and after the final one, the
+      device reliably fails to re-enumerate. This isn't documented anywhere
+      in the AOA spec; it was found empirically. The delays are now baked
+      into `start_accessory_mode`.
+- [x] Android: implement `UsbAccessory` registration (accessory filter,
       intent-filter, permission handling) and bulk endpoint read/write.
-      Don't rely on the accessory-attached intent-filter alone to bring the
-      app to the foreground — confirmed in Phase 0 that MagicOS doesn't
-      reliably do this even though the permission grant succeeds silently.
-      Include the `accessoryList`/`requestPermission` fallback path from
-      `spikes/aoa-hello-android/` defensively.
-- [ ] Connect/disconnect detection on both ends; clean teardown. Must treat
-      AOA re-enumeration (device disappears and reappears as `18d1:2d00`,
-      confirmed in Phase 0) as a first-class state transition, not an edge
-      case.
-- [ ] Basic reconnect logic (tablet unplugged/replugged mid-session).
+      `android/app/.../MainActivity.kt`. Real finding, more significant
+      than the Phase 0 note anticipated: **`ACTION_USB_ACCESSORY_ATTACHED`
+      does not reliably reach even a dynamically-registered runtime
+      receiver on an already-running app instance on this device/OS** —
+      only a fresh Activity launch's `accessoryList` check picked it up
+      reliably. The working fix is active polling of `accessoryList` (see
+      `startPolling()`) as the primary reconnect mechanism, with the
+      broadcast receiver kept only as a possibly-faster opportunistic path
+      on devices where it does work.
+- [x] Connect/disconnect detection on both ends; clean teardown. Host
+      detects physical disconnect via a `read_bulk` `NoDevice` error and
+      loops back to reconnect automatically (`main.rs`'s retry loop).
+      Android detects it via the `ACTION_USB_ACCESSORY_DETACHED` broadcast
+      (confirmed reliable, unlike ATTACHED) plus an `IOException`/EOF on
+      the read stream as a backup signal; both trigger `closeConnection()`
+      + `startPolling()`. AOA re-enumeration (device disappears and
+      reappears as `18d1:2d00`/`2d01`) is handled as a first-class state
+      transition via `find_existing_accessory_device()`, not an edge case —
+      a reconnect after a *non-physical* disconnect (e.g. the host process
+      restarting) correctly skips redoing the handshake since the device is
+      already in accessory mode.
+- [x] Basic reconnect logic (tablet unplugged/replugged mid-session):
+      validated live, twice — once via killing/restarting the host process
+      with no physical replug (skips handshake, reconnects instantly), and
+      once via a genuine physical unplug/replug while the daemon was
+      running continuously (full handshake redone automatically, `HELLO`/
+      `HELLO_ACK` completed with no manual steps on either side).
+
+### Other real findings worth carrying into later phases
+
+- **Repeated rapid failed handshake attempts can leave the device in a
+  confusing state** where several consecutive retries fail even though the
+  code is correct — recovery sometimes needed a genuine physical replug to
+  clear, not just more software retries. The 2s backoff between retry
+  cycles already in `main.rs` seems sufficient in practice, but this is
+  worth watching if flakiness resurfaces.
+- **MagicOS requires unlocking the device (PIN/password) on most
+  reconnects**, plus its normal "how do you want to connect" (Photos/Files/
+  Charge-only) prompt, before the accessory permission flow can proceed.
+  This is a real, unavoidable OS-level security gate that works against
+  the "feels like a real peripheral" goal from `CLAUDE.md` — not fixable by
+  tabscreen, but belongs in Phase 8's setup guide as an expected step, not
+  a bug.
+- **Multiple installed apps matching the same `accessory_filter.xml`
+  identification strings trigger an app-chooser dialog.** Only one app
+  should ever be installed with tabscreen's identification strings at a
+  time; the Phase 0 spike app (`ai.tabscreen.aoahello`) was uninstalled for
+  exactly this reason once `android/`'s real client existed.
+- The Android client's reconnect story now depends on the Activity staying
+  alive (for its poll thread) or the OS relaunching it — neither is
+  guaranteed if MagicOS kills a backgrounded/minimized app. A persistent
+  foreground `Service` doing the polling/connection work, rather than the
+  `Activity`, would be more robust — worth considering before Phase 6
+  packaging, not required for Phase 1's scope.
 
 ## Phase 2 — Virtual Display (X11 RandR)
 

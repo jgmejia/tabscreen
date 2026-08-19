@@ -4,5 +4,9 @@ build/
 local.properties
 *.apk
 
+# Rust build artifacts (Cargo.lock is kept — host is a binary, not a
+# library, so pinning exact dependency versions is the right practice)
+target/
+
 # Editor swap files
 *.swp
