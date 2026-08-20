@@ -4,6 +4,13 @@ build/
 local.properties
 *.apk
 
+# Release signing key: this is the app's permanent identity -- losing it
+# means future releases can never be signed to match an already-installed
+# copy, forcing a full uninstall/reinstall. Never commit it or its
+# passwords; back both up somewhere durable outside git instead.
+android/tabscreen-release.keystore
+android/keystore.properties
+
 # Rust build artifacts (Cargo.lock is kept — host is a binary, not a
 # library, so pinning exact dependency versions is the right practice)
 target/

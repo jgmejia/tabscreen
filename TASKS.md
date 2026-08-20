@@ -879,7 +879,25 @@ during live validation, in
       Phase 1 finding (`ACTION_USB_ACCESSORY_ATTACHED` unreliable on an
       already-running app instance), not new to this install path.
 - [ ] Android app packaging for sideload distribution (no Play Store
-      dependency assumed initially).
+      dependency assumed initially). **In progress (2026-08-20):**
+      release signing is implemented and working —
+      `android/app/build.gradle.kts` reads a `keystore.properties`
+      (gitignored, generated live and verified with `apksigner`) and
+      `gradle assembleRelease` produces a correctly-signed APK. **Not yet
+      closed out**: the signed release build crashes on launch on the
+      real tablet, reproduced consistently (including via direct
+      physical taps, not just `adb`). A live bisection ruled out the
+      obvious suspects — identical crash with `isDebuggable=true`, with
+      the release build signed by the *debug* keystore instead, and even
+      a from-scratch clean rebuild of the plain debug variant that had
+      been working correctly for hours earlier the same session. The
+      tablet's battery was critically low (down to 7%, draining even
+      while nominally "charging") during the failed attempts, which is
+      the leading suspect — Android aggressively kills newly-launching
+      apps under critical battery pressure, which would explain a crash
+      uncorrelated with which specific APK is installed. Paused pending
+      the tablet actually charging back up on a proper power source (not
+      through the host laptop's USB port) before retrying.
 
 ## Phase 7 — Reliability & Polish
 
@@ -896,8 +914,16 @@ during live validation, in
 
 ## Phase 8 — Documentation & Release
 
-- [ ] User-facing setup guide (install steps, enabling accessory mode,
-      first-connect flow).
+- [x] User-facing setup guide (install steps, enabling accessory mode,
+      first-connect flow). `README.md` (new, project had none before) —
+      prerequisites, host install (`install.sh`), Android sideload
+      (including how to generate your own release keystore), usage, a
+      troubleshooting section covering the two recurring live-testing
+      papercuts this project kept hitting (app needs a fresh relaunch;
+      physical replug clears a stuck USB state), and an honest
+      "Known limitations" section (single validated hardware pairing,
+      X11-only, right-side placement only, one tablet at a time, 90Hz
+      not requested, GDM greeter unverified).
 - [ ] Update `CLAUDE.md` with any architecture decisions finalized during
       implementation that diverge from the current plan.
 - [ ] Versioned release/tag of host daemon + Android client.

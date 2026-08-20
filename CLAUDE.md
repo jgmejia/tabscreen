@@ -69,7 +69,8 @@ Custom video-streaming pipeline, matching what makes commercial tools (Duet
 Display, Splashtop Wired XDisplay, SuperDisplay) actually good:
 
 1. **Host**: create a virtual display as a real X11 RandR output (Linux
-   `xf86-video-dummy`, not an app-level window — see
+   `vkms`, the in-tree Virtual Kernel Mode Setting driver — not an
+   app-level window, and not `xf86-video-dummy`; see
    [X11 RandR Integration Requirement](#x11-randr-integration-requirement)),
    capture its framebuffer.
 2. **Encode**: hardware-accelerated H.264/H.265 for low latency and full
@@ -102,7 +103,22 @@ window (borderless, sized to the tablet, streamed) — a window is not an
 addressable RandR output, so window managers won't let users snap/drag other
 windows onto it the way they can onto a real monitor, and arandr would have
 nothing to show for it. The virtual display has to be a genuine output on
-the RandR tree, created via the `xf86-video-dummy` X.org driver.
+the RandR tree.
+
+**Implementation note (revised after live hardware investigation, see
+`docs/adr/0006` through `0021` for the full trail):** the originally
+planned mechanism, `xf86-video-dummy`, turned out not to work on this
+hardware at all — it couldn't coexist with a real GPU already driving
+the live session's real monitors (`docs/adr/0006`), and neither could
+several NVIDIA-native workarounds tried afterward (they conclusively
+broke real external-monitor detection, `docs/adr/0019`). The actual
+mechanism is **`vkms`** (Virtual Kernel Mode Setting), an in-tree Linux
+kernel driver: a genuinely separate virtual GPU that never touches a
+real GPU's own detection/output state, so it can't cause the failures
+`xf86-video-dummy` and the NVIDIA approaches did (`docs/adr/0021`). The
+architectural requirement below — a real RandR output, not a window —
+is unchanged; only the driver providing it is different from the
+original plan.
 
 ### Consequences
 
@@ -112,22 +128,22 @@ the RandR tree, created via the `xf86-video-dummy` X.org driver.
   cannot drive at all). This scopes tabscreen's host support to X11 sessions
   for the foreseeable future — a real limitation given several distros now
   default to Wayland.
-- **Dummy outputs are usually not truly hot-pluggable.** Unlike a real GPU
-  connector, `xf86-video-dummy` outputs are normally declared ahead of time
-  in an Xorg config snippet (`/etc/X11/xorg.conf.d/`) and fixed at X server
-  start; you can't materialize a brand-new RandR output at runtime just
-  because a tablet was plugged in. The realistic design is to pre-declare
-  one or more dummy outputs (kept `--off` when idle) as part of tabscreen
-  installation, then have the host daemon do `xrandr --output DUMMY1 --mode
-  ... --pos ... --output DUMMY1 --auto` on tablet connect and `--output
-  DUMMY1 --off` on disconnect.
-- **Installation needs elevated privileges and touches system config.**
-  Writing the dummy-driver Xorg snippet (and possibly restarting the X
-  server or the user's session) is a heavier install step than the
-  commercial competitors need — Windows (IddCx) and macOS both have
-  supported APIs for creating a virtual display dynamically without editing
-  system-wide display config; Linux/X11 does not have an equivalent, so
-  tabscreen has to manage that manual config itself.
+- **`vkms` *is* genuinely hot-pluggable, unlike the originally planned
+  `xf86-video-dummy`.** No Xorg config snippet, no X server restart: the
+  kernel module is loaded once at boot (`/etc/modules-load.d/vkms.conf`),
+  and the host daemon does `xrandr --newmode`/`--addmode` (registering a
+  mode matching the tablet's real panel) plus `--output ... --mode ...
+  --pos ...` on tablet connect, and `--output ... --off` on disconnect —
+  all live, ordinary RandR calls, no session disruption. This turned out
+  simpler than the original plan anticipated, not harder.
+- **Installation still needs elevated privileges, but much less than
+  originally planned.** The only system-wide, root-requiring step is the
+  one-line `vkms` boot-time module config — no Xorg config snippet to
+  write, no display-manager/session restart. Windows (IddCx) and macOS
+  both have supported APIs for creating a virtual display dynamically
+  without touching system-wide config at all; Linux/X11 still has no
+  equivalent, but the gap is narrower than `xf86-video-dummy` would have
+  required.
 - **Mode matching is now a hard requirement, not an optimization.** Because
   arandr shows the output's actual mode/resolution, tabscreen must query the
   tablet's real panel resolution and refresh rate (over the AOA link) and
