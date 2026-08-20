@@ -809,13 +809,47 @@ re-check with real touch now that Phase 2 is unblocked.
 - [ ] Handle tablet rotation (portrait/landscape) — decide whether this
       remaps the X11 output's mode or is handled client-side only.
 
-## Phase 6 — Packaging & Installation
+## Phase 6 — Packaging & Installation ✅ Host install path complete (2026-08-20)
 
-- [ ] udev rule(s) granting non-root USB access to the AOA device and
-      triggering the host daemon on plug-in.
-- [ ] systemd (user) service definition for the host daemon.
-- [ ] Installer script: Xorg config snippet + udev rule + service
-      registration, with a clean uninstall path.
+- [x] udev rule granting non-root USB access to the AOA device:
+      `host/resources/udev/69-tabscreen-aoa.rules`, matching both stages
+      of the handshake (vendor `339b`/HONOR pre-handshake, `18d1`/Google
+      product `2d00`/`2d01` post-handshake, mirroring `aoa.rs`'s own
+      constants exactly). Uses `TAG+="uaccess"` (systemd-logind seat
+      ownership) with `GROUP="plugdev"` as a fallback. **Not** a
+      udev-triggered spawn-on-plug-in rule — superseded by the systemd
+      service below (see its item for why that fits this daemon's
+      existing design better).
+- [x] systemd (user) service for the host daemon:
+      `host/resources/systemd/tabscreen.service.template`. A
+      continuously-running user service, not a udev-triggered one-shot —
+      the daemon already has its own internal wait/retry loop
+      (`aoa::wait_for_candidate_device`, up to 1hr) and reconnect logic
+      (Phase 1), so a long-running service that's just always ready
+      matches its existing architecture far better than spawning a fresh
+      process per USB plug event would (which would need reworking the
+      daemon to exit cleanly per-disconnect and would risk double-spawn
+      races with udev). Templated (`__DISPLAY__`/`__XAUTHORITY__`/
+      `__BIN_PATH__`) since a systemd user service's environment doesn't
+      reliably inherit these on every distro/session-manager combo;
+      `install.sh` fills them in from the installing shell's own
+      environment at install time.
+- [x] Installer script: `host/install.sh` (release build, binary to
+      `~/.local/bin/tabscreen-host`, udev rule, `vkms` module-load config
+      — idempotent, reuses the boot-time config from ADR 0021 if already
+      present — and the systemd service, `enable --now`) and
+      `host/uninstall.sh` (reverses all of it).
+      **Live-validated end-to-end (2026-08-20)**: user ran `install.sh`
+      directly, service came up `active`/`enabled` immediately, correctly
+      found the tablet already in accessory mode and connected. Confirmed
+      the daemon no longer needs a manually-run terminal command at
+      all — full pipeline (activation, video decode, `released>0
+      errors=0`) working through the systemd-managed process, same as
+      every manual run this session. One expected hiccup, not a bug: the
+      Android app needed a fresh relaunch to pick up the connection after
+      sitting idle from a prior manual test — the same already-documented
+      Phase 1 finding (`ACTION_USB_ACCESSORY_ATTACHED` unreliable on an
+      already-running app instance), not new to this install path.
 - [ ] Android app packaging for sideload distribution (no Play Store
       dependency assumed initially).
 

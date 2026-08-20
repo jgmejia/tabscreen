@@ -1,0 +1,27 @@
+# tabscreen: non-root USB access to the Android tablet, at both stages of
+# the AOA handshake (docs/wire-protocol.md, host/src/aoa.rs).
+#
+# Confirmed live (2026-08-20) that once a device is already in accessory
+# mode from a prior session, the host daemon doesn't strictly need root --
+# but a *fresh* handshake (SEND_STRING/START_ACCESSORY control transfers)
+# does need write access to the device's control endpoint, which requires
+# either root or this rule. TAG+="uaccess" grants access to whichever user
+# owns the active graphical seat (systemd-logind), which is the right
+# model for a single-user desktop -- GROUP="plugdev"/MODE are kept
+# alongside it as a fallback for systems where uaccess isn't in effect.
+#
+# Two vendor/product matches, matching host/src/aoa.rs exactly:
+#   - 339b (HONOR, this project's target tablet) at any product ID: the
+#     device's *native* identity, before accessory mode is negotiated.
+#   - 18d1 (Google), product 2d00 or 2d01: the device's identity *after*
+#     re-enumerating in accessory mode (2d01 = accessory+ADB, seen when
+#     ADB is also enabled -- both are handled identically here and in
+#     aoa.rs's own ACCESSORY_PIDS list).
+#
+# Update the 339b line (or add another) if this is ever used with a
+# non-HONOR tablet -- this project has only ever targeted one specific
+# device (CLAUDE.md's target scope, ADR 0004).
+
+SUBSYSTEM=="usb", ATTR{idVendor}=="339b", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", ATTR{idProduct}=="2d00", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", ATTR{idProduct}=="2d01", MODE="0660", GROUP="plugdev", TAG+="uaccess"

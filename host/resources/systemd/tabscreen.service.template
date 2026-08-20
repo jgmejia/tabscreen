@@ -1,0 +1,15 @@
+[Unit]
+Description=tabscreen host daemon (Android tablet as second monitor)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+Environment=DISPLAY=__DISPLAY__
+Environment=XAUTHORITY=__XAUTHORITY__
+ExecStart=__BIN_PATH__
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target
