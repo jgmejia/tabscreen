@@ -720,18 +720,27 @@ content rendering correctly on the tablet.
       against the real HONOR Pad X8a (see above) — a single static frame
       wasn't tested in isolation, but continuous streaming succeeding is a
       strictly harder bar.
-- [x] Encode framerate raised from a hardcoded 30fps to 90fps, matching
-      the tablet's peak negotiated refresh rate — a real, user-reported
-      latency contributor (every screen update, including feedback for
-      the user's own touch, was capped to a 33ms cadence regardless of
-      panel capability). Live-validated incrementally (30→60→90),
-      sustained at 90 with zero errors. `ffmpeg` warned the 90fps stream
-      doesn't conform to any standard H.264 level, which looked like a
-      strong signal of trouble given ADR 0023's decoder-is-stricter-
-      than-declared finding — turned out to be the opposite this time
-      (decoder is *more* permissive than strict level conformance). Full
-      writeup in
-      [docs/adr/0030-encode-framerate-raised-to-90.md](docs/adr/0030-encode-framerate-raised-to-90.md).
+- [x] Encode framerate raised from a hardcoded 30fps — a real,
+      user-reported latency contributor (every screen update, including
+      feedback for the user's own touch, was capped to a 33ms cadence
+      regardless of panel capability). Tried 90fps first (matching the
+      tablet's peak negotiated refresh rate), live-validated clean in a
+      short (~25s) test — **but longer real use revealed `x11grab` can't
+      actually sustain 90fps captures on this hardware**, causing
+      `ffmpeg` to hit an internal frame-duplication safety cutoff and
+      silently stop sending real output, which froze the tablet's video
+      while its own decode counters kept looking healthy (misleading —
+      see ADR 0031). **Reverted to 60fps**, live-validated genuinely live
+      (not just via the client's counters, which don't reliably indicate
+      this failure — via a direct host/tablet screenshot comparison)
+      for about a minute with no recurrence. Full writeup in
+      [docs/adr/0030-encode-framerate-raised-to-90.md](docs/adr/0030-encode-framerate-raised-to-90.md)
+      and
+      [docs/adr/0031-90fps-reverted-frame-duplication-failure.md](docs/adr/0031-90fps-reverted-frame-duplication-failure.md).
+      60fps itself has only had a short soak test — worth a longer
+      unattended run before fully trusting it, and the real fix (confirm
+      MIT-SHM is in use, measure this hardware's actual sustained
+      capture rate) is still open.
 - [ ] Rigorous latency measurement (e.g. timestamped round trip) and
       formal bitrate/resolution tuning against the Phase 0 AOA throughput
       ceiling — still not done; current settings (8Mbps, 90fps,

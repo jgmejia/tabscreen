@@ -19,19 +19,21 @@ const VAAPI_RENDER_NODE: &str = "/dev/dri/renderD128"; // confirmed the Intel iG
 const BITRATE: &str = "8M";
 // Was hardcoded to 30 since early testing and never revisited even after
 // Phase 5 negotiation started reporting the tablet's real refresh rate
-// (90Hz) -- a real, measurable source of the latency/smoothness the user
-// noticed live (2026-08-20): every screen update, including feedback for
-// the user's own touch input, was capped to a 33ms-spaced frame cadence
-// regardless of what the panel could actually show. Stepping up
-// incrementally (30 -> 60 first) rather than jumping straight to 90,
-// matching this project's standing practice of verifying hardware
-// behavior live rather than trusting a declared spec -- the encoder/USB
-// path has large confirmed headroom (Phase 0: VAAPI H.264 encode at
-// 16.4x realtime; -b:v is a target bitrate independent of framerate, so
-// this doesn't increase USB bandwidth needs at all), but the decoder's
-// real framerate ceiling on this hardware hasn't been tested the way its
-// pixel-count ceiling was (ADR 0023/0027).
-const FRAMERATE: &str = "90";
+// (90Hz) -- a real, measurable source of latency/smoothness the user
+// noticed live (2026-08-20). Raised to 90 first (see ADR 0030), which
+// looked clean in a short live test, but longer real use surfaced
+// `x11grab`/ffmpeg logging "frame duplication too large, skipping"
+// repeatedly -- x11grab can't actually sustain real captures at 90fps
+// (likely its own polling/XGetImage overhead, not a VAAPI/decoder
+// limit), so ffmpeg pads with duplicate frames to hit the target rate
+// and eventually hits an internal safety cutoff, at which point it
+// stops producing real output entirely -- the frozen-video symptom the
+// user hit live. Reverted to 60 (also live-validated clean, and half
+// the duplicate-padding pressure of 90) pending a real fix -- possibly
+// confirming MIT-SHM is actually in use, or capping at whatever
+// x11grab's real sustained capture rate genuinely is on this hardware,
+// neither of which has been measured yet.
+const FRAMERATE: &str = "60";
 const GOP: &str = "60";
 
 /// Empirically-confirmed pixel-count ceiling for the target HONOR Pad
