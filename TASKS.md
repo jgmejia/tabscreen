@@ -213,7 +213,148 @@ unlock/USB-mode prompts.
   `Activity`, would be more robust — worth considering before Phase 6
   packaging, not required for Phase 1's scope.
 
-## Phase 2 — Virtual Display (X11 RandR)
+## Phase 2 — Virtual Display (X11 RandR) — Unblocked: `vkms` works cleanly (2026-08-19)
+
+**Breakthrough (2026-08-19):** `vkms` (in-tree, no build/compatibility
+risk, loaded via `/etc/modules-load.d/vkms.conf` at boot) created a real,
+connected, correctly-positioned RandR output (`Virtual-2-1`) on the first
+attempt, with **neither real monitor disturbed and no wrong-primary bug**
+— the exact two failure modes that consumed the entire `ConnectedMonitor`
+investigation below. Full writeup in
+[docs/adr/0021-vkms-works-cleanly-first-try.md](docs/adr/0021-vkms-works-cleanly-first-try.md).
+This works because `vkms` never touches Intel's or NVIDIA's own detection
+state — it's a genuinely separate virtual GPU, unlike `ConnectedMonitor`'s
+override-on-a-real-GPU approach. **Phase 2 is unblocked.** Remaining work:
+add a custom mode matching the tablet's real panel via `xrandr --newmode`/
+`--addmode`, confirm on/off toggling, verify greeter behavior and arandr
+positioning, then point Phase 3/4's placeholder targets at this real
+output. See updated checklist below.
+
+**Everything below is preserved history of how the (much harder than
+expected) path to this was found — not further action items unless
+`vkms` turns out to have a blocking limitation.**
+
+**Conclusive finding (2026-08-19):** `ConnectedMonitor "DFP-1"` doesn't
+just cause an unreliable toggle or a greeter-selection problem — it
+**breaks real hardware detection for the actual external monitor**,
+confirmed across all 9 boots tonight with a causal proof, not a
+correlation: the "recovery" moment in every boot happened only *after*
+the config file had already been removed and `gdm` restarted, never from
+the same Xorg session healing itself. Full writeup in
+[docs/adr/0019-connectedmonitor-breaks-real-monitor-detection.md](docs/adr/0019-connectedmonitor-breaks-real-monitor-detection.md).
+**This rules out the entire `ConnectedMonitor`/`CustomEDID` approach
+(ADRs 0010–0018), not just this session's specific tests** — both
+"dynamic" (option 1) and "always-on" (option 2) would mean the real
+external monitor stops working for as long as the config is active, which
+is a hard non-starter, not a UX tradeoff. Real remaining paths:
+reconsider `evdi`/`vkms` (deprioritized in 0006/0008, but their failure
+mode is different from what just ruled out `ConnectedMonitor`); move
+further experimentation to a VM or second machine (ADR 0006's
+long-deferred suggestion, now more clearly warranted given tonight's
+impact on the primary daily-use machine); or check whether a USB-C
+dock/adapter could give Intel a genuinely idle connector (0009 found none
+built into this laptop). Confirmed fully recovered: both monitors active,
+greeter correctly on `eDP-1`, after removing the config.
+
+**Deeper look at the USB-C dock option (2026-08-19):** checked this
+machine's actual USB topology rather than relying on the spec sheet alone.
+Both Keychron peripherals (physically in USB-C-shaped ports right now)
+enumerate via the ordinary 480Mbps USB 2.0 hub, not the dedicated 20Gbps
+USB-C/SuperSpeed controller, which currently shows zero connected devices;
+`/sys/class/typec/` is empty even with the relevant kernel modules loaded.
+Lenovo's spec sheet does list USB-C 3.2 Gen 2 with DisplayPort 1.4, and
+the port is physically marked USB-PD, so this isn't fully ruled out — but
+priority is lowered pending further investigation; not pursuing purchases
+based on this until revisited.
+
+**Researched `evdi` properly (2026-08-19) — promising, and architecturally
+avoids 0019's failure mode.** Full writeup in
+[docs/adr/0020-evdi-research-promising-candidate.md](docs/adr/0020-evdi-research-promising-candidate.md).
+Key points: `evdi` is a genuine separate DRM device driven by Xorg's
+generic `modesetting` driver — never touches NVIDIA's driver, so it can't
+reproduce 0019's "breaks real monitor detection" bug. Confirmed no real
+DisplayLink dock or proprietary daemon needed. Its own documented
+`modprobe.d` config includes a `softdep` specifically to stop the
+compositor from selecting it as primary — the exact bug class that ate
+hours of tonight's NVIDIA testing is something `evdi`'s maintainers
+already solved. The previously-flagged freeze risk (loading the module
+into an already-running Xorg) is avoidable by loading it at boot via
+`/etc/modules` with `initial_device_count` set, so Xorg sees the virtual
+device from its very first startup rather than a live dynamic add. All
+build prerequisites (kernel headers, `dkms`, `evdi-dkms` package) already
+present/available on this machine. `vkms` ruled out separately — testing
+tool only, doesn't reliably expose a real capturable framebuffer. **Not
+yet attempted live** — see ADR 0020's proposed plan.
+
+**Status as of 2026-08-19 (corrected after an initial overclaim — see ADR
+0016):** the blind-login test (proposed after ADR 0015's greeter/session
+reframing) confirmed via Xorg's own log that a real logged-in session
+correctly keeps the virtual tablet output disconnected at the driver level
+while both real monitors configure normally. **That is not the same as
+confirming the desktop was actually usable.** `gnome-shell`'s own log
+(checked after an initial, premature "resolved" claim was made and then
+retracted) shows rendering warnings followed by a 6-minute-40-second gap
+before the desktop became interactive — consistent with the user's direct
+report of "no luck," not with a clean success. Full writeup, including the
+correction, in
+[docs/adr/0016-blind-login-driver-ok-desktop-usability-unconfirmed.md](docs/adr/0016-blind-login-driver-ok-desktop-usability-unconfirmed.md).
+**Phase 2 remains blocked.** Next step: retest with the user directly
+observing and reporting in real time whether the desktop becomes usable,
+rather than reconstructing the answer from logs afterward — see ADR 0016's
+Decision.
+
+**Status as of 2026-08-19 (corrected after an initial overclaim — see ADR
+0016):** the blind-login test (proposed after ADR 0015's greeter/session
+reframing) confirmed via Xorg's own log that a real logged-in session
+correctly keeps the virtual tablet output disconnected at the driver level
+while both real monitors configure normally. **That is not the same as
+confirming the desktop was actually usable.** `gnome-shell`'s own log
+(checked after an initial, premature "resolved" claim was made and then
+retracted) shows rendering warnings followed by a 6-minute-40-second gap
+before the desktop became interactive — consistent with the user's direct
+report of "no luck," not with a clean success. Full writeup, including the
+correction, in
+[docs/adr/0016-blind-login-driver-ok-desktop-usability-unconfirmed.md](docs/adr/0016-blind-login-driver-ok-desktop-usability-unconfirmed.md).
+**Phase 2 remains blocked.** Next step: retest with the user directly
+observing and reporting in real time whether the desktop becomes usable,
+rather than reconstructing the answer from logs afterward — see ADR 0016's
+Decision.
+
+**Retested (2026-08-19), user watched directly.** Initially misread as
+"non-deterministic within one boot" by comparing two logins — corrected
+after finding the second login happened *after* the user had already
+removed the Xorg config via their fallback (VT-switch, `sudo rm`,
+`systemctl restart gdm`) — that comparison was invalid, not a real
+same-config discrepancy. Full correction in
+[docs/adr/0017-nondeterminism-claim-was-analysis-error.md](docs/adr/0017-nondeterminism-claim-was-analysis-error.md).
+**The corrected, honest picture:** across all boots today, exactly two
+genuine trials had the config actually active — 0016's session (`DFP-1`
+correctly disconnected, but a 6m40s stall before the desktop responded)
+and today's session 1 (`DFP-1` wrongly connected — the same broken pattern
+as every greeter failure — but fast rendering). One for two, two different
+failure modes, neither clean.
+
+**Retested once more (2026-08-19) with a tightened protocol — config
+presence confirmed via the Xorg log immediately, user watched in real
+time.** Result: user watched a genuinely blank, unresponsive screen for
+2.5 minutes; the log (checked right after, config confirmed active)
+showed the same broken re-activation pattern as every greeter failure.
+This is a third genuine, protocol-verified trial, and it's broken. Full
+conclusion in
+[docs/adr/0018-monitorsxml-disabled-mechanism-unreliable.md](docs/adr/0018-monitorsxml-disabled-mechanism-unreliable.md).
+**Conclusion: `monitors.xml`'s `<disabled>` mechanism is unreliable (2 of
+3 genuine trials broken, and the 1 "correct" trial never confirmed
+usable), not a race condition worth debugging further.** This is roughly
+the ninth live-hardware attempt this session. **Phase 2 remains blocked.**
+Three real options going forward (ADR 0018's Decision): make
+`ConnectedMonitor` genuinely dynamic (applied only at actual tablet-connect
+time, not pre-declared at boot); accept a scope reduction (virtual output
+active from boot, not toggled); or move further experimentation to a
+different validation environment (ADR 0006's still-open suggestion).
+Recommend deciding among these with the user before further live attempts
+on this machine.
+
+**History below, preserved for context on how this was reached:**
 
 **Incident (2026-08-18):** an early attempt applied a bare dummy-driver Xorg
 snippet directly to the live GDM/GNOME session (not the isolated `Xorg :2`
@@ -237,34 +378,254 @@ active competing `Screen` against from a second process — the
 validate the actual merge target on this hardware. Full details, all four
 test logs' findings, and next-step options in
 [docs/adr/0006-dummy-driver-multi-gpu-binding-failure.md](docs/adr/0006-dummy-driver-multi-gpu-binding-failure.md).
-**Phase 2 is blocked on resolving this before any further live-hardware
-Xorg testing or installer work.**
 
-- [ ] Research whether a newer/patched `xf86-video-dummy` build, or an
+**Attempted and failed empirically (2026-08-19):** researched `evdi`/`vkms`
+as ADR 0006 suggested, but both share a live-session-freeze risk when their
+kernel module loads while Xorg is already running (the same failure class as
+0005's incident) — real-world reports confirm this for `evdi`. Instead found
+and tried a third approach that avoids the multi-driver/multi-screen problem
+entirely: **EDID firmware override on an already-idle connector**
+(`drm.edid_firmware=DP-1-0:<edid-file>` kernel boot parameter), rather than
+adding a second driver/screen at all — full plan in
+[docs/adr/0008-edid-override-virtual-output.md](docs/adr/0008-edid-override-virtual-output.md).
+Generated and `edid-decode`-validated an EDID for the tablet, installed the
+GRUB parameter (with a proper backup/rollback plan), rebooted: **no session
+damage, but `DP-1-0` never came up connected.** Root cause (full diagnosis in
+[docs/adr/0009-edid-firmware-wrong-gpu-driver.md](docs/adr/0009-edid-firmware-wrong-gpu-driver.md)):
+`DP-1-0` is Xorg's RandR name, not a real kernel connector name; the idle
+connectors (`DP-1`/`DP-2`) actually sit on the **NVIDIA** GPU (0008 had the
+GPU vendor backwards), and NVIDIA's proprietary driver doesn't implement the
+generic kernel `drm.edid_firmware=` mechanism at all — while **Intel** (the
+GPU that *does* support it) has zero idle connectors on this machine, only
+the already-in-use laptop panel. Change fully reverted (`/etc/default/grub`
+restored from backup, confirmed identical via `diff`, `update-grub` re-run).
+**Phase 2 is blocked again.**
+
+**Researched (2026-08-19), not yet attempted:** NVIDIA's own native
+`Option "ConnectedMonitor"`/`Option "CustomEDID"` Xorg `Device` options —
+pulled exact semantics from the NVIDIA driver README shipped locally on
+this machine, plus a real-world Ubuntu/Xorg/NVIDIA/GDM precedent that kept
+its real monitor working while adding a virtual one the same way. Checked
+this machine's actual `journalctl` Xorg log for real candidate connectors on
+the NVIDIA GPU: of six enumerated (`DFP-0`..`DFP-5`), two are TMDS-class
+(165 MHz max pixel clock — too low for our 196.5/302.75 MHz modes), one
+(`DFP-4`) is the real connected monitor, leaving `DFP-1`/`DFP-3`/`DFP-5`
+(DisplayPort-class, 2670 MHz max) as real candidates. Full writeup, exact
+proposed config fragment, and open questions (fragment scoping without an
+existing base Xorg config, restart-vs-reboot) in
+[docs/adr/0010-nvidia-customedid-connectedmonitor.md](docs/adr/0010-nvidia-customedid-connectedmonitor.md).
+**Attempted and failed (2026-08-19):** applied 0010's exact proposed
+fragment (bare `Device` section, `ConnectedMonitor "DFP-1"` +
+`CustomEDID "DFP-1:..."`, no `Screen`/`ServerLayout`) via a full reboot.
+Two problems, diagnosed after the fact from `journalctl` (full detail in
+[docs/adr/0011-customedid-bare-fragment-failed.md](docs/adr/0011-customedid-bare-fragment-failed.md)):
+**(1) the option had no effect** — `DFP-1` logged `disconnected` throughout,
+in both Xorg instances that boot; **(2) Xorg crashed at the exact moment of
+login** (`Insufficient permissions` setting a mode on all four heads, plus
+Intel's separate `modeset(0)` driver failing too, at the same instant — a
+pattern more consistent with a DRM-master handoff race than something
+`DFP-1`-specific, though correlation with the new fragment can't be ruled
+out either). GDM self-healed automatically within ~1 second (unlike 0005,
+no forced shutdown needed), but the user reasonably recovered manually via
+VT-switch before observing that. Session confirmed fully healthy afterward.
+**Do not retry with `DFP-3`/`DFP-5` using the same bare-fragment shape** —
+since the option didn't bind at all, a different connector name would very
+plausibly fail identically. Next candidate: match the actually-confirmed-
+working precedent's shape more closely (full `Device` + `Screen` with
+explicit `metamodes`, not a bare fragment) — not yet attempted. **Phase 2
+remains blocked**, and given this is the third failed live-hardware attempt
+across three mechanisms (one causing a real if self-healing crash), the
+next attempt should not proceed without deliberately reconsidering the
+approach first, not just iterating connector names — see ADR 0011's
+Decision.
+
+**Attempted (2026-08-19): the mechanism itself now works.** Applied a full
+`Device` + `Screen` config (`ConnectedMonitor`/`CustomEDID` plus an explicit
+`MetaModes` string preserving the real monitor's exact current mode and
+adding the virtual tablet output). Result, diagnosed from `journalctl` in
+[docs/adr/0012-full-config-mechanism-works-greeter-primary-issue.md](docs/adr/0012-full-config-mechanism-works-greeter-primary-issue.md):
+**the driver correctly showed "TBS TabScreen (DFP-1): connected" and set
+the mode to 1200×1920** — the EDID/`ConnectedMonitor`/`CustomEDID`/
+`MetaModes` recipe is confirmed correct, the first attempt (of four) where
+the underlying mechanism worked. The user still saw "gdm failed to start"
+(~74s, recovered via VT-switch, no crash found in logs, session fully
+healthy afterward) — best explanation is the login *greeter* rendered
+itself onto the new invisible virtual output rather than the real monitor,
+a display-selection/UX problem, not a mechanism failure. Also a reframe:
+this test forced the virtual output permanently live in boot-time
+`MetaModes`, which is a harsher test than Phase 2 actually needs (the real
+design is "off until tablet connects," toggled at runtime) — the proposed
+next test keeps this same config but turns the output off immediately
+after Xorg starts, before any greeter render, which is both closer to
+production behavior and likely sidesteps the greeter problem entirely.
+
+**Attempted (2026-08-19), and found a deeper problem:** tried the
+NULL-default `MetaModes` combo from the item above
+(`DFP-1: NULL` as the first/default combo). Failed differently and more
+informatively — full diagnosis in
+[docs/adr/0013-connectedmonitor-desktop-autoactivation-conflict.md](docs/adr/0013-connectedmonitor-desktop-autoactivation-conflict.md):
+**the driver rejected the NULL combo outright** (`"...DFP-1:NULL"; removing`),
+so `DFP-1` was live from boot regardless; and **something above Xorg
+(most plausibly `mutter`'s greeter auto-layout) actively re-activated and
+repositioned the output** even when the config tried to keep it off. This
+points to an architectural conflict, not a syntax bug:
+`ConnectedMonitor` tells the *entire desktop stack*, not just the driver,
+"this is really plugged in" — and a real connected monitor being
+auto-activated is correct desktop behavior, which is fundamentally in
+tension with "off until the tablet connects." Every attempt so far that
+gets the driver to report the port connected also gets it auto-activated
+by something above the driver, regardless of what the static config says.
+**Do not keep iterating `MetaModes` syntax against this** — see ADR 0013's
+Decision for the real candidate fixes (seeding a `monitors.xml` that
+excludes the output; making `ConnectedMonitor` genuinely dynamic —
+applied only at actual tablet-connect time rather than pre-declared at
+boot; or accepting a scope reduction where the output is active from boot
+rather than toggled). This is the fifth live-hardware attempt this
+session (second producing a failed/blank greeter) — reconsider strategy
+with the user before a sixth.
+
+**Researched (2026-08-19), not yet attempted:** read mutter's own
+`meta-monitor-config-store.c` source directly to check whether
+`monitors.xml` can express "known monitor, keep it off." Confirmed:
+**it has a purpose-built `<disabled>` section with `<monitorspec>`
+entries** (`connector`/`vendor`/`product`/`serial`) — exactly this
+semantic, not something to hack around. Full writeup and two open
+unknowns (does GDM's greeter even read a per-session `monitors.xml`;
+does config-matching need an exact/complete match against every
+connected monitor) in
+[docs/adr/0014-monitorsxml-disabled-mechanism-research.md](docs/adr/0014-monitorsxml-disabled-mechanism-research.md).
+Plausibly much lower-risk than prior attempts (a plain config file, not
+boot-critical Xorg config; mutter is documented to fall back gracefully
+rather than crash on a bad config) but not yet proven. Not yet attempted
+live.
+
+**Attempted (2026-08-19): `monitors.xml` didn't stop it either — and a
+strategic reframing.** Seeded `monitors.xml` at both plausible locations
+with exact real monitor identities (queried live via
+`org.gnome.Mutter.DisplayConfig.GetCurrentState`, removing prior guesswork)
+plus a `<disabled>` entry for the virtual output. Same failure signature as
+every prior attempt — full diagnosis in
+[docs/adr/0015-connectedmonitor-desktop-autoactivation-conflict-2.md](docs/adr/0015-connectedmonitor-desktop-autoactivation-conflict-2.md).
+**Key reframing: every failure so far has been at the GDM greeter stage,
+which is not what Phase 2 actually needs** — the host daemon that toggles
+the virtual output only ever runs during an already-logged-in session,
+never the greeter. GDM's greeter plausibly has its own independent
+monitor policy that doesn't respect `monitors.xml` the way a real session
+does (reasonably, for security reasons). This is directly testable: prior
+diagnosis (ADR 0011) showed login can succeed blind (typing
+username/password without seeing the greeter) even when the screen looks
+broken. **Not yet attempted:** logging in blind through the blank greeter
+to check whether the real session (not the greeter) correctly keeps
+`DFP-1` off by default. This is the sixth live-hardware attempt this
+session — paused here to confirm direction with the user before a seventh.
+
+**Attempted (2026-08-19), mixed result — corrected after an initial
+overclaim:** logged in blind through the broken greeter. The user reported
+"no luck" and fell back. Xorg's own log shows `DFP-1: disconnected` held
+consistently for ~13 minutes with both real monitors configured normally —
+but checking `gnome-shell`'s own log (done only after an initial premature
+"it worked" claim was made and then retracted) shows rendering warnings
+followed by a 6-minute-40-second gap before the desktop became interactive,
+consistent with the user's report, not a clean success. Full account
+including the correction in
+[docs/adr/0016-blind-login-driver-ok-desktop-usability-unconfirmed.md](docs/adr/0016-blind-login-driver-ok-desktop-usability-unconfirmed.md).
+**Driver-level config confirmed correct; desktop usability NOT confirmed —
+Phase 2 remains blocked.** Next step: retest with the user directly
+watching and reporting in real time. The greeter itself is separately
+cosmetically broken with this config active — out of Phase 2's critical
+path regardless, tracked as Phase 7/8 polish.
+
+- [x] Research whether a newer/patched `xf86-video-dummy` build, or an
       alternative virtual-display driver (e.g. `evdi`, a purpose-built
       virtual KMS driver), supports binding as a secondary/offload GPU
-      screen — ADR 0006's finding 1.
-- [ ] Decide on a validation strategy that doesn't require contending with
-      this machine's already-claimed real GPUs (e.g. a VM, or a different
-      test machine) — ADR 0006's finding 2.
-- [ ] Once a working driver/approach is found: re-validate the combined
-      config shape before it ever touches `/etc/X11/xorg.conf.d/` on the
-      live session.
-- [ ] Write installer step that adds the validated `xf86-video-dummy` Xorg
-      config snippet — confirmed one `Device` section yields 16 outputs
-      (`DUMMY0`-`DUMMY15`) for free when used standalone, so no need to
-      hand-declare more than one (see Phase 0 findings). Installer should
-      derive the real GPU's `BusID` from `lspci` at install time rather than
-      hardcoding it.
-- [ ] Host daemon: on tablet connect, run `xrandr --newmode <name> <modeline>`
-      + `--addmode DUMMYn <name>` **before** `--mode`/`--auto` — confirmed
-      `--auto` alone does not activate a non-`DUMMY0` output, since it has
-      no mode to select without one being registered first. Then
-      `--output DUMMYn --mode <name> --pos ...`; on disconnect, `--off`.
-- [ ] Verify in arandr: output appears, can be dragged/positioned/rotated,
-      and disappears cleanly on tablet disconnect.
-- [ ] Handle the "no free dummy output available" case (e.g. second tablet,
-      or dummy outputs not pre-provisioned) with a clear error.
+      screen — ADR 0006's finding 1. Resolved by adopting the EDID-override
+      approach instead (ADR 0008), which sidesteps the binding problem
+      rather than solving it for `dummy`/`evdi`/`vkms`.
+- [x] Generate an EDID binary encoding the HONOR Pad X8a's real panel spec
+      (1200×1920, 60/90Hz) — see ADR 0008.
+      `host/resources/edid/generate_edid.py` builds it programmatically
+      (CVT timings from `cvt 1200 1920 60`/`90`, sRGB chromaticity, digital
+      DisplayPort interface, "TabScreen" product name descriptor); output
+      at `host/resources/edid/tabscreen-honor-pad-x8a.bin`, validated clean
+      with `edid-decode` (correct 1200x1920 DTDs at 59.95/89.89 Hz, valid
+      checksum, no warnings).
+- [x] ~~Add the `drm.edid_firmware=DP-1-0:<file>` kernel boot parameter...~~
+      **Tried, failed empirically, reverted — see ADR 0009.** Not a viable
+      path on this hardware (wrong GPU/driver combination); superseded by
+      the NVIDIA-native item below.
+- [x] ~~Try NVIDIA's native `Option "ConnectedMonitor" "DFP-1"` + bare
+      `Option "CustomEDID"` fragment...~~ **Tried, failed (no effect on
+      DFP-1's connected state, plus a self-healing login-time crash) — see
+      ADR 0011.** Superseded by the full-`Device`+`Screen` item below.
+- [x] ~~Try `ConnectedMonitor`/`CustomEDID` again, shaped like the
+      confirmed-working precedent...~~ **Tried — the mechanism works**
+      (`TBS TabScreen (DFP-1): connected`, mode set to 1200×1920 correctly)
+      **but the login greeter rendered onto the invisible virtual output
+      instead of the real monitor** — see ADR 0012. Superseded by the
+      off-by-default sequencing item below.
+- [x] ~~Test the same confirmed-working `Device`+`Screen` config, but with
+      the virtual output turned off...~~ Superseded — `monitors.xml`'s
+      `<disabled>` mechanism (ADR 0014) is the right lever, not Xorg-level
+      sequencing.
+- [ ] **Confirm, with the user directly watching and reporting in real
+      time (not reconstructed from logs afterward), that the desktop
+      actually becomes usable after login with this config active** — the
+      one unconfirmed and highest-priority item blocking Phase 2. Xorg's
+      own log confirms the driver-level output state is correct
+      (`DFP-1`/`DP-1` disconnected, real monitors fine); `gnome-shell`'s
+      log shows a ~6m40s gap before the desktop became interactive in the
+      one attempt made so far, which needs explaining (or fixing) before
+      this can be marked done. See ADR 0016.
+- [ ] Once desktop usability is actually confirmed: the same check via a
+      live `xrandr --query` run interactively from within a session, and
+      confirmation of exactly which `monitors.xml` location (`/etc/xdg/`
+      vs `/var/lib/gdm3/.config/`) is the one a real user session actually
+      reads — both are currently seeded, not yet isolated.
+- [x] ~~Confirm the output can be toggled on via NVIDIA MetaModes
+      switching...~~ Superseded — abandoned the entire `ConnectedMonitor`
+      approach (ADR 0019). See the `vkms`-based checklist below instead.
+
+### Current Phase 2 checklist (`vkms`-based, 2026-08-19)
+
+- [x] Load `vkms` at boot via `/etc/modules-load.d/vkms.conf`; confirmed a
+      real, connected, correctly-positioned output (`Virtual-2-1`)
+      appears, with neither real monitor disturbed and no wrong-primary
+      bug — see ADR 0021.
+- [x] Add a custom mode matching the tablet's real panel via `xrandr
+      --newmode`/`--addmode` against `Virtual-2-1`, confirmed live:
+      `Virtual-2-1 connected 1200x1920+6400+0`, mode `1200x1920_60.00`
+      current, both real monitors unaffected. (60Hz only so far; 90Hz mode
+      not yet added.)
+- [x] Confirmed live: `xrandr --output Virtual-2-1 --off` cleanly
+      deactivates it (stays "connected", no active mode/geometry), real
+      monitors unaffected. Reactivating needs **both** `--mode` and
+      `--pos` explicitly (`--mode` alone resets position to `+0+0`,
+      overlapping `eDP-1` — caught live, not a bug, just `xrandr`
+      behavior after `--off` clears layout). Confirmed working:
+      `xrandr --output Virtual-2-1 --mode "1200x1920_60.00" --pos 6400x0`.
+      Host daemon implementation must always pass `--pos` on activate, not
+      rely on remembered position.
+- [ ] Confirm behavior at the GDM greeter specifically (not yet tested for
+      `vkms`) — the NVIDIA saga's greeter problems were NVIDIA-specific,
+      shouldn't apply here, but verify rather than assume.
+- [x] Verified in arandr: all three monitors shown correctly
+      (`eDP-1`/`HDMI-1-0`/`Virtual-2-1`, left-to-right, top-aligned),
+      `Virtual-2-1` correctly rendered in its true portrait orientation
+      (1200 wide × 1920 tall). Satisfies `CLAUDE.md`'s core requirement —
+      a real, arandr-manageable RandR output.
+- [ ] Check whether `vkms`'s configfs interface (if present in this
+      kernel) supports EDID injection, to reuse the already-validated
+      `host/resources/edid/tabscreen-honor-pad-x8a.bin` — otherwise the
+      `--newmode` approach above is sufficient on its own.
+- [ ] Write installer step: `/etc/modules-load.d/vkms.conf` plus whatever
+      mode/EDID setup is confirmed above — no DKMS build step needed,
+      much simpler than the `evdi` install path would have been.
+- [ ] Host daemon: on tablet connect, activate the output with the
+      tablet's mode and position; on disconnect, deactivate it.
+- [ ] Handle the "no free output available" case (e.g. a second tablet)
+      with a clear error — `vkms` only creates one default device without
+      additional configfs-based configuration; multi-tablet support
+      (Phase 7's open question) needs revisiting against this constraint.
 
 ## Phase 3 — Video Pipeline ✅ Core pipeline validated live (2026-08-19)
 
