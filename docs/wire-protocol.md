@@ -54,13 +54,50 @@ a new channel.
 |---|---|---|---|
 | 0x01 | `HELLO` | host → client | `protocol_version: u8` |
 | 0x02 | `HELLO_ACK` | client → host | `protocol_version: u8` |
+| 0x03 | `DISPLAY_INFO` | client → host | `width: u16LE, height: u16LE, refresh_hz: u8` |
 
 Sequence: once the AOA bulk pipe is open (host handshake complete, Android
 app has claimed the accessory), the host sends `HELLO` with
 `protocol_version = 1`. The client responds `HELLO_ACK` with the version it
-supports. A version mismatch is logged, not treated as fatal in v1 (only
-one version exists) — future versions should define real negotiation
-behavior here rather than assuming this stays trivial forever.
+supports, immediately followed by `DISPLAY_INFO` (Phase 5). A version
+mismatch is logged, not treated as fatal in v1 (only one version exists) —
+future versions should define real negotiation behavior here rather than
+assuming this stays trivial forever.
+
+### `DISPLAY_INFO` (Phase 5)
+
+Reports the client's **current effective display mode** — not a fixed
+hardware constant. `width`/`height` are in the device's current rotation
+(so for tabscreen's landscape-locked client, `width` > `height`); `refresh_hz`
+is the display's current refresh rate, rounded to the nearest integer.
+
+The host waits (with a timeout — `HELLO_ACK_TIMEOUT` in `host/src/main.rs`)
+to receive `DISPLAY_INFO` before activating the tabscreen RandR output,
+registering a matching `xrandr` mode (`--newmode`/`--addmode`) built from
+these exact values instead of a hardcoded resolution. If the timeout
+elapses without a `DISPLAY_INFO` (an old/non-negotiating client, or a
+malformed one), the host falls back to its own hardcoded defaults
+(`FALLBACK_TABLET_*` constants) rather than failing the connection outright.
+
+**Refresh rate is reported, not requested**: the client doesn't actively
+switch the Android display mode to a higher refresh rate (e.g. 90Hz on the
+HONOR Pad X8a, confirmed available in Phase 0) — it just reports whatever
+the OS's current mode already is, which defaults to 60Hz. Deliberately
+conservative: Phase 0 confirmed AOA throughput headroom would tolerate
+90Hz's higher video bitrate, but ADR 0023/0027's decoder pixel-count
+ceiling investigation showed this device's real hardware limits don't
+always match what's declared/assumed — actively requesting a higher
+refresh rate is a separate decision to make with its own live validation,
+not something to bundle into the negotiation mechanism itself.
+
+**Rotation is out of scope for v1**, not unresolved: the Android client is
+locked to landscape (`AndroidManifest.xml`'s `screenOrientation`, this
+session's earlier UI work) specifically so there's no runtime orientation
+switch to handle — `DISPLAY_INFO` reports whatever that fixed orientation's
+dimensions are, once, at connection time. A future client that supports
+runtime rotation would need a new message here (or a re-sent
+`DISPLAY_INFO`) and host-side logic to re-register the RandR mode/reposition
+live — not attempted now.
 
 ## VIDEO channel messages (Phase 3 scope)
 

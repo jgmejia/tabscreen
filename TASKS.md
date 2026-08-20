@@ -800,18 +800,42 @@ real HONOR Pad X8a.
 Phase 4 is otherwise complete; the remaining item just needs a live
 re-check with real touch now that Phase 2 is unblocked.
 
-## Phase 5 — Mode Negotiation
+## Phase 5 — Mode Negotiation ✅ Complete (2026-08-20)
 
-- [ ] Android: report tablet panel resolution + refresh rate during the
-      Phase 1 handshake. Confirmed target values for the HONOR Pad X8a:
-      1200×1920 native, supports 60Hz (default) and 90Hz — decide whether
-      to request 90Hz explicitly given the USB 2.0/AOA throughput ceiling
-      from Phase 0, or stay at 60Hz to leave more bandwidth for video
-      quality. Don't assume 90Hz is free.
-- [ ] Host: register a matching `xrandr` mode (`--newmode`/`--addmode`)
-      instead of a hardcoded dummy resolution.
-- [ ] Handle tablet rotation (portrait/landscape) — decide whether this
-      remaps the X11 output's mode or is handled client-side only.
+Full writeup, including a real rotation-adjustment bug found and fixed
+during live validation, in
+[docs/adr/0028-phase5-mode-negotiation.md](docs/adr/0028-phase5-mode-negotiation.md).
+
+- [x] Android: report tablet panel resolution + refresh rate during the
+      Phase 1 handshake. New `DISPLAY_INFO` CONTROL message
+      (`docs/wire-protocol.md`), sent right after `HELLO_ACK`. **Refresh
+      rate is reported, not requested** — the client doesn't switch
+      Android's display mode to 90Hz (confirmed available, Phase 0), it
+      just reports whatever's currently active (defaults to 60Hz) —
+      deliberately conservative per this item's own original note, given
+      ADR 0023/0027 already found this hardware's real limits don't
+      reliably match what's declared/assumed. Actively requesting 90Hz
+      is explicitly left as a separate, not-yet-attempted future step.
+- [x] Host: register a matching `xrandr` mode from the negotiated values
+      instead of a hardcoded resolution — `main.rs`'s
+      `wait_for_display_info` waits (5s timeout, then falls back to the
+      old hardcoded constants, renamed `FALLBACK_TABLET_*`) for
+      `DISPLAY_INFO` before calling `display::activate()`.
+      Live-validated: host log shows `negotiated display:
+      1920x1200@60Hz`, matching this session's manually-tuned constants
+      exactly, and real decode confirmed on the tablet
+      (`released=2317 errors=0`).
+- [x] Handle tablet rotation — resolved as out-of-scope for v1 by
+      design, not left unresolved: the Android client is locked to
+      landscape (`AndroidManifest.xml`, this session's earlier UI work),
+      so there's no runtime rotation to handle. `DISPLAY_INFO` reports
+      that fixed orientation's dimensions once, at connection time. A
+      real bug was found and fixed here during live testing:
+      `Display.Mode.physicalWidth`/`physicalHeight` are **not**
+      rotation-adjusted (report the panel's native portrait shape even
+      while actually rendering landscape) — `sendDisplayInfo()` now
+      checks `Display.getRotation()` and swaps width/height when it's
+      90°/270° from natural.
 
 ## Phase 6 — Packaging & Installation ✅ Host install path complete (2026-08-20)
 

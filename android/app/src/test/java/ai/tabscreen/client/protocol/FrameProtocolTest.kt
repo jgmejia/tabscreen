@@ -78,6 +78,16 @@ class FrameProtocolTest {
     }
 
     @Test
+    fun `encodes display info as little-endian width, height, refresh`() {
+        val encoded = Control.encodeDisplayInfo(width = 1920, height = 1200, refreshHz = 60)
+        assertEquals(6, encoded.size)
+        assertEquals(Control.DISPLAY_INFO, encoded[0].toInt() and 0xFF)
+        assertEquals(1920, (encoded[1].toInt() and 0xFF) or ((encoded[2].toInt() and 0xFF) shl 8))
+        assertEquals(1200, (encoded[3].toInt() and 0xFF) or ((encoded[4].toInt() and 0xFF) shl 8))
+        assertEquals(60, encoded[5].toInt() and 0xFF)
+    }
+
+    @Test
     fun `round trips a touch event`() {
         val ev = TouchEvent(TouchAction.MOVE, pointerId = 0, x = 0.25f, y = 0.75f, pressure = 0.5f)
         val encoded = Input.encodeTouch(ev)

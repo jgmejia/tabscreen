@@ -11,16 +11,25 @@ use std::time::Duration;
 use x11rb::connection::Connection;
 use x11rb::rust_connection::RustConnection;
 
-/// HONOR Pad X8a's confirmed real panel spec (Phase 0), used landscape --
-/// the user runs it rotated 90° from native (`android:screenOrientation
-///="landscape"` in the manifest; the tablet's own rotation lock must be
-/// set to match, not auto-rotate, or the orientation mismatch letterboxes
-/// the surface -- see ADR 0023's orientation-mismatch finding). Placeholder
-/// until Phase 5 negotiates the actual connected tablet's mode over the
-/// wire instead of assuming this one.
-const TABLET_WIDTH: u32 = 1920;
-const TABLET_HEIGHT: u32 = 1200;
-const TABLET_REFRESH_HZ: u32 = 60;
+/// Fallback tablet mode (Phase 5): used only if the client doesn't
+/// complete the `DISPLAY_INFO` handshake within `HELLO_ACK_TIMEOUT` -- an
+/// old/non-negotiating client, or a malformed message. Otherwise the real
+/// negotiated values from the client's own `DISPLAY_INFO` (see
+/// `wait_for_display_info`) are used instead. Value is the HONOR Pad
+/// X8a's confirmed real panel spec (Phase 0), landscape (the user runs it
+/// rotated 90° from native -- `android:screenOrientation="landscape"` in
+/// the manifest; the tablet's own rotation lock must be set to match, not
+/// auto-rotate, or the orientation mismatch letterboxes the surface, see
+/// ADR 0023).
+const FALLBACK_TABLET_WIDTH: u32 = 1920;
+const FALLBACK_TABLET_HEIGHT: u32 = 1200;
+const FALLBACK_TABLET_REFRESH_HZ: u32 = 60;
+
+/// How long to wait for the client's `DISPLAY_INFO` (docs/wire-protocol.md)
+/// after `HELLO_ACK` before giving up and using the fallback above. AOA
+/// bulk transfer is confirmed fast (Phase 0: sub-millisecond typical), so
+/// this is generous slack for a slow client, not a tuned-tight budget.
+const HELLO_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// `Placement::Left` was tried live (2026-08-20) and reverted: shifting
 /// real outputs via sequential per-output `xrandr --pos` calls hit GNOME/
@@ -119,12 +128,38 @@ fn run_one_connection(x11: Option<&(RustConnection, u32)>) -> anyhow::Result<()>
     handle.write_bulk(ep_out, &hello, Duration::from_secs(10))?;
     log::info!("sent HELLO");
 
+    // Shared with the main read loop below -- wait_for_display_info only
+    // consumes CONTROL frames it recognizes (HELLO_ACK, DISPLAY_INFO) and
+    // forwards anything else to handle_frame, so nothing arriving early is
+    // lost or double-processed once the main loop takes over the same
+    // reader/buf.
+    let mut reader = FrameReader::new();
+    let mut buf = [0u8; 16384];
+
+    let (tablet_width, tablet_height, tablet_refresh_hz) =
+        match wait_for_display_info(&handle, ep_in, &mut reader, &mut buf, HELLO_ACK_TIMEOUT)? {
+            Some(info) => {
+                log::info!(
+                    "negotiated display: {}x{}@{}Hz",
+                    info.width, info.height, info.refresh_hz
+                );
+                (info.width as u32, info.height as u32, (info.refresh_hz as u32).max(1))
+            }
+            None => {
+                log::warn!(
+                    "no DISPLAY_INFO within {HELLO_ACK_TIMEOUT:?}, falling back to \
+                     {FALLBACK_TABLET_WIDTH}x{FALLBACK_TABLET_HEIGHT}@{FALLBACK_TABLET_REFRESH_HZ}Hz"
+                );
+                (FALLBACK_TABLET_WIDTH, FALLBACK_TABLET_HEIGHT, FALLBACK_TABLET_REFRESH_HZ)
+            }
+        };
+
     // Activated for the lifetime of this connection cycle only -- dropping
     // `active_output` (any exit path: error, unplug, normal return) turns
     // the tabscreen output back off via its Drop impl.
     let active_output = match x11 {
         Some((conn, root)) => {
-            match display::activate(conn, *root, TABLET_WIDTH, TABLET_HEIGHT, TABLET_REFRESH_HZ, PLACEMENT) {
+            match display::activate(conn, *root, tablet_width, tablet_height, tablet_refresh_hz, PLACEMENT) {
                 Ok(a) => Some(a),
                 Err(e) => {
                     log::warn!("virtual display activation failed, video/input disabled for this connection: {e:#}");
@@ -158,14 +193,56 @@ fn run_one_connection(x11: Option<&(RustConnection, u32)>) -> anyhow::Result<()>
         None => log::warn!("no active virtual display, video streaming disabled"),
     }
 
-    let mut reader = FrameReader::new();
-    let mut buf = [0u8; 16384];
     loop {
         match handle.read_bulk(ep_in, &mut buf, Duration::from_secs(30)) {
             Ok(n) => {
                 reader.feed(&buf[..n]);
                 while let Some(frame) = reader.try_read_frame()? {
                     handle_frame(frame, injector.as_ref());
+                }
+            }
+            Err(rusb::Error::Timeout) => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
+
+/// Reads CONTROL frames until the client's `DISPLAY_INFO` (Phase 5,
+/// docs/wire-protocol.md) arrives or `timeout` elapses, returning `Ok(None)`
+/// on a clean timeout (not an error -- the caller falls back to a default
+/// mode) or `Err` on a real connection failure. Shares `reader`/`buf` with
+/// the caller's own main loop so a read that grabs bytes belonging to a
+/// later frame (e.g. an early `INPUT` frame arriving in the same bulk
+/// transfer as `DISPLAY_INFO`) isn't lost or replayed once the caller
+/// takes over.
+fn wait_for_display_info(
+    handle: &DeviceHandle<GlobalContext>,
+    ep_in: u8,
+    reader: &mut FrameReader,
+    buf: &mut [u8],
+    timeout: Duration,
+) -> anyhow::Result<Option<control::DisplayInfo>> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(None);
+        }
+        match handle.read_bulk(ep_in, buf, remaining) {
+            Ok(n) => {
+                reader.feed(&buf[..n]);
+                while let Some(frame) = reader.try_read_frame()? {
+                    if frame.channel == Channel::Control {
+                        if frame.payload.first() == Some(&control::HELLO_ACK) {
+                            let version = frame.payload.get(1).copied().unwrap_or(0);
+                            log::info!("received HELLO_ACK, client protocol_version={version}");
+                            continue;
+                        }
+                        if let Ok(info) = control::decode_display_info(&frame.payload) {
+                            return Ok(Some(info));
+                        }
+                    }
+                    handle_frame(frame, None);
                 }
             }
             Err(rusb::Error::Timeout) => continue,
@@ -202,6 +279,11 @@ fn handle_frame(frame: Frame, injector: Option<&input::Injector<'_>>) {
             if frame.payload.first() == Some(&control::HELLO_ACK) {
                 let version = frame.payload.get(1).copied().unwrap_or(0);
                 log::info!("received HELLO_ACK, client protocol_version={version}");
+            } else if control::decode_display_info(&frame.payload).is_ok() {
+                // Already consumed by wait_for_display_info in the normal
+                // case; only reachable if the client sends a second one
+                // mid-connection, which nothing currently does or expects.
+                log::warn!("ignoring unexpected mid-connection DISPLAY_INFO");
             } else {
                 log::warn!("unexpected control payload: {:?}", frame.payload);
             }

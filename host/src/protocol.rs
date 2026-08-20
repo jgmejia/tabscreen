@@ -106,17 +106,50 @@ impl FrameReader {
 pub mod control {
     pub const HELLO: u8 = 0x01;
     pub const HELLO_ACK: u8 = 0x02;
+    pub const DISPLAY_INFO: u8 = 0x03;
+    const DISPLAY_INFO_LEN: usize = 6;
 
     pub fn encode_hello(protocol_version: u8) -> Vec<u8> {
         vec![HELLO, protocol_version]
     }
 
-    // The host only sends HELLO and receives HELLO_ACK; this encoder is
-    // the client-side half of the pair, kept here for protocol symmetry
-    // and exercised by tests. The Kotlin client has its own equivalent.
+    // The host only sends HELLO and receives HELLO_ACK/DISPLAY_INFO; these
+    // encoders are the client-side half of the pair, kept here for
+    // protocol symmetry and exercised by tests. The Kotlin client has its
+    // own equivalent.
     #[allow(dead_code)]
     pub fn encode_hello_ack(protocol_version: u8) -> Vec<u8> {
         vec![HELLO_ACK, protocol_version]
+    }
+
+    #[allow(dead_code)]
+    pub fn encode_display_info(width: u16, height: u16, refresh_hz: u8) -> Vec<u8> {
+        let mut out = Vec::with_capacity(DISPLAY_INFO_LEN);
+        out.push(DISPLAY_INFO);
+        out.extend_from_slice(&width.to_le_bytes());
+        out.extend_from_slice(&height.to_le_bytes());
+        out.push(refresh_hz);
+        out
+    }
+
+    /// The client's current effective display mode (Phase 5) -- not a
+    /// fixed hardware constant, see docs/wire-protocol.md.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct DisplayInfo {
+        pub width: u16,
+        pub height: u16,
+        pub refresh_hz: u8,
+    }
+
+    pub fn decode_display_info(payload: &[u8]) -> anyhow::Result<DisplayInfo> {
+        if payload.len() < DISPLAY_INFO_LEN || payload[0] != DISPLAY_INFO {
+            anyhow::bail!("malformed DISPLAY_INFO payload: {:?}", payload);
+        }
+        Ok(DisplayInfo {
+            width: u16::from_le_bytes([payload[1], payload[2]]),
+            height: u16::from_le_bytes([payload[3], payload[4]]),
+            refresh_hz: payload[5],
+        })
     }
 }
 
@@ -259,6 +292,19 @@ mod tests {
         let frame = reader.try_read_frame().unwrap().unwrap();
         assert_eq!(frame.payload[0], control::HELLO_ACK);
         assert_eq!(frame.payload[1], 1);
+    }
+
+    #[test]
+    fn round_trips_display_info() {
+        let encoded = control::encode_display_info(1920, 1200, 60);
+        let decoded = control::decode_display_info(&encoded).unwrap();
+        assert_eq!(decoded, control::DisplayInfo { width: 1920, height: 1200, refresh_hz: 60 });
+    }
+
+    #[test]
+    fn rejects_a_truncated_display_info_payload() {
+        let encoded = control::encode_display_info(1920, 1200, 60);
+        assert!(control::decode_display_info(&encoded[..3]).is_err());
     }
 
     #[test]

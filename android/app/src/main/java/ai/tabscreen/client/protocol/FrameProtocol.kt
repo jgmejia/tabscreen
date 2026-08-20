@@ -85,9 +85,29 @@ class FrameReader {
 object Control {
     const val HELLO: Int = 0x01
     const val HELLO_ACK: Int = 0x02
+    const val DISPLAY_INFO: Int = 0x03
 
     fun encodeHello(protocolVersion: Int): ByteArray = byteArrayOf(HELLO.toByte(), protocolVersion.toByte())
     fun encodeHelloAck(protocolVersion: Int): ByteArray = byteArrayOf(HELLO_ACK.toByte(), protocolVersion.toByte())
+
+    /**
+     * Reports this device's *current effective* display mode (Phase 5,
+     * docs/wire-protocol.md) -- not a fixed hardware constant. `width`/
+     * `height` are in the device's current rotation; `refreshHz` is
+     * rounded to the nearest integer. Sent once, immediately after
+     * HELLO_ACK -- the client is orientation-locked (AndroidManifest.xml),
+     * so there's no runtime change to report again later.
+     */
+    fun encodeDisplayInfo(width: Int, height: Int, refreshHz: Int): ByteArray {
+        val out = ByteArray(6)
+        out[0] = DISPLAY_INFO.toByte()
+        out[1] = (width and 0xFF).toByte()
+        out[2] = ((width shr 8) and 0xFF).toByte()
+        out[3] = (height and 0xFF).toByte()
+        out[4] = ((height shr 8) and 0xFF).toByte()
+        out[5] = refreshHz.toByte()
+        return out
+    }
 }
 
 enum class TouchAction(val byte: Int) {

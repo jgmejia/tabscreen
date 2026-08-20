@@ -21,6 +21,7 @@ import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import android.view.MotionEvent
+import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
@@ -249,6 +250,34 @@ class MainActivity : Activity() {
     }
 
     /**
+     * Reports this device's real, current display mode (Phase 5,
+     * docs/wire-protocol.md) so the host can register a matching xrandr
+     * mode instead of assuming a hardcoded one.
+     *
+     * `Display.Mode.physicalWidth`/`physicalHeight` are **not**
+     * rotation-adjusted -- confirmed live (2026-08-20) that they report
+     * the panel's fixed native orientation (1200x1920, portrait) even
+     * while this activity is locked to and actually rendering landscape.
+     * `Display.getRotation()` gives the current rotation state
+     * independent of that, so swap width/height here whenever it's 90°/
+     * 270° from natural -- otherwise DISPLAY_INFO silently reports the
+     * wrong shape and the host activates a portrait output while a
+     * landscape-shaped video stream is actually being sent into it.
+     */
+    private fun sendDisplayInfo() {
+        @Suppress("DEPRECATION")
+        val display = windowManager.defaultDisplay
+        @Suppress("DEPRECATION")
+        val mode = display.mode
+        val rotated = display.rotation == Surface.ROTATION_90 || display.rotation == Surface.ROTATION_270
+        val width = if (rotated) mode.physicalHeight else mode.physicalWidth
+        val height = if (rotated) mode.physicalWidth else mode.physicalHeight
+        val refreshHz = Math.round(mode.refreshRate)
+        Log.i(TAG, "sending DISPLAY_INFO: ${width}x${height}@${refreshHz}Hz (rotation=${display.rotation})")
+        sendFrame(encodeFrame(Channel.CONTROL, Control.encodeDisplayInfo(width, height, refreshHz)))
+    }
+
+    /**
      * No SurfaceView yet (Phase 3), so touches are captured against the
      * whole window and normalized by its size — matches what the wire
      * protocol expects (docs/wire-protocol.md's INPUT channel).
@@ -303,6 +332,7 @@ class MainActivity : Activity() {
                     val hostVersion = frame.payload.getOrNull(1)?.toInt()?.and(0xFF) ?: 0
                     Log.i(TAG, "received HELLO, host protocol_version=$hostVersion")
                     sendFrame(encodeFrame(Channel.CONTROL, Control.encodeHelloAck(PROTOCOL_VERSION)))
+                    sendDisplayInfo()
                     connectionStatus = "Connected\nHandshake complete (host v$hostVersion)"
                     refreshStatus()
                 } else {
