@@ -17,7 +17,21 @@ use crate::display::OutputRect;
 
 const VAAPI_RENDER_NODE: &str = "/dev/dri/renderD128"; // confirmed the Intel iGPU in Phase 0
 const BITRATE: &str = "8M";
-const FRAMERATE: &str = "30";
+// Was hardcoded to 30 since early testing and never revisited even after
+// Phase 5 negotiation started reporting the tablet's real refresh rate
+// (90Hz) -- a real, measurable source of the latency/smoothness the user
+// noticed live (2026-08-20): every screen update, including feedback for
+// the user's own touch input, was capped to a 33ms-spaced frame cadence
+// regardless of what the panel could actually show. Stepping up
+// incrementally (30 -> 60 first) rather than jumping straight to 90,
+// matching this project's standing practice of verifying hardware
+// behavior live rather than trusting a declared spec -- the encoder/USB
+// path has large confirmed headroom (Phase 0: VAAPI H.264 encode at
+// 16.4x realtime; -b:v is a target bitrate independent of framerate, so
+// this doesn't increase USB bandwidth needs at all), but the decoder's
+// real framerate ceiling on this hardware hasn't been tested the way its
+// pixel-count ceiling was (ADR 0023/0027).
+const FRAMERATE: &str = "90";
 const GOP: &str = "60";
 
 /// Empirically-confirmed pixel-count ceiling for the target HONOR Pad

@@ -720,12 +720,25 @@ content rendering correctly on the tablet.
       against the real HONOR Pad X8a (see above) — a single static frame
       wasn't tested in isolation, but continuous streaming succeeding is a
       strictly harder bar.
+- [x] Encode framerate raised from a hardcoded 30fps to 90fps, matching
+      the tablet's peak negotiated refresh rate — a real, user-reported
+      latency contributor (every screen update, including feedback for
+      the user's own touch, was capped to a 33ms cadence regardless of
+      panel capability). Live-validated incrementally (30→60→90),
+      sustained at 90 with zero errors. `ffmpeg` warned the 90fps stream
+      doesn't conform to any standard H.264 level, which looked like a
+      strong signal of trouble given ADR 0023's decoder-is-stricter-
+      than-declared finding — turned out to be the opposite this time
+      (decoder is *more* permissive than strict level conformance). Full
+      writeup in
+      [docs/adr/0030-encode-framerate-raised-to-90.md](docs/adr/0030-encode-framerate-raised-to-90.md).
 - [ ] Rigorous latency measurement (e.g. timestamped round trip) and
       formal bitrate/resolution tuning against the Phase 0 AOA throughput
-      ceiling — not done yet; current settings (8Mbps, 30fps target,
-      1088x1742 real encode output post-ADR-0023 downscale) were
+      ceiling — still not done; current settings (8Mbps, 90fps,
+      1816x1136 real encode output post-ADR-0027 downscale) were
       validated for stability, not tuned for quality or measured for
-      latency.
+      latency. The framerate bump (above) is a reasoned improvement to a
+      known contributor, not a measured before/after latency number.
 - [x] Capture the tabscreen output's framebuffer specifically (not the
       host's whole current screen) — done via `display.rs`/ADR 0022, and
       live-validated end-to-end per this phase's header above.
