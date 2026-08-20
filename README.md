@@ -117,10 +117,16 @@ sources" for that source app the first time.
 
 ## Using it
 
-1. Plug the tablet into the host's USB-C port.
-2. Unlock the tablet and launch the tabscreen app once (see
-   [Troubleshooting](#troubleshooting) — the very first connection after
-   install needs the app open manually; it isn't fully automatic yet).
+1. Unlock the tablet, then plug it into the host's USB-C port.
+2. **For the very first connection after installing**, let Android
+   auto-launch the app from the USB-accessory prompt rather than opening
+   it manually from the home screen — confirmed live that manually
+   launching the app *before* it has ever been granted USB permission
+   hits a crash in the permission-request fallback path (see
+   [Troubleshooting](#troubleshooting)). If it doesn't auto-launch
+   (MagicOS's auto-launch is known to be unreliable), unplug and replug
+   rather than opening it by hand. Once permission has been granted once
+   for this app install, opening it manually is fine from then on.
 3. The tablet should show your host's desktop, and a new output (named
    something like `Virtual-2-1`) should appear in `arandr`/`xrandr`,
    positioned to the right of your existing monitors. Drag it around in
@@ -132,11 +138,21 @@ sources" for that source app the first time.
 
 ## Troubleshooting
 
+- **App crashes immediately on launch, every time** (only seen so far
+  when manually opening/reopening the app *before* it has ever been
+  granted USB permission — e.g. testing with `adb shell am start`
+  instead of a real accessory connection): unplug and replug the tablet
+  instead of opening the app by hand. The crash is in the manual
+  permission-request fallback path
+  (`MainActivity.requestOrOpen()`/`UsbManager.requestPermission()`); the
+  normal accessory-attach flow doesn't go through it and isn't affected.
+  Once permission's been granted once, manually reopening the app is
+  fine from then on.
 - **Tablet shows "Connected. Waiting for HELLO..." and never proceeds**:
-  the most common issue by far. Force-stop and relaunch the Android app.
-  Android's accessory-attached auto-launch isn't reliable on all devices,
-  so the app sometimes needs a manual nudge to notice an already-active
-  connection.
+  the most common issue by far, once permission's already been granted.
+  Force-stop and relaunch the Android app. Android's accessory-attached
+  auto-launch isn't reliable on all devices, so the app sometimes needs
+  a manual nudge to notice an already-active connection.
 - **Still stuck after relaunching the app**: physically unplug and
   replug the USB cable. This forces a full USB re-enumeration and clears
   almost any stuck state on either end.

@@ -878,26 +878,37 @@ during live validation, in
       sitting idle from a prior manual test — the same already-documented
       Phase 1 finding (`ACTION_USB_ACCESSORY_ATTACHED` unreliable on an
       already-running app instance), not new to this install path.
-- [ ] Android app packaging for sideload distribution (no Play Store
-      dependency assumed initially). **In progress (2026-08-20):**
-      release signing is implemented and working —
-      `android/app/build.gradle.kts` reads a `keystore.properties`
-      (gitignored, generated live and verified with `apksigner`) and
-      `gradle assembleRelease` produces a correctly-signed APK. **Not yet
-      closed out**: the signed release build crashes on launch on the
-      real tablet, reproduced consistently (including via direct
-      physical taps, not just `adb`). A live bisection ruled out the
-      obvious suspects — identical crash with `isDebuggable=true`, with
-      the release build signed by the *debug* keystore instead, and even
-      a from-scratch clean rebuild of the plain debug variant that had
-      been working correctly for hours earlier the same session. The
-      tablet's battery was critically low (down to 7%, draining even
-      while nominally "charging") during the failed attempts, which is
-      the leading suspect — Android aggressively kills newly-launching
-      apps under critical battery pressure, which would explain a crash
-      uncorrelated with which specific APK is installed. Paused pending
-      the tablet actually charging back up on a proper power source (not
-      through the host laptop's USB port) before retrying.
+- [x] Android app packaging for sideload distribution (no Play Store
+      dependency assumed initially). Release signing implemented and
+      working — `android/app/build.gradle.kts` reads a
+      `keystore.properties` (gitignored) and `gradle assembleRelease`
+      produces a correctly-signed APK (verified with `apksigner`). Full
+      writeup in
+      [docs/adr/0029-android-release-crash-was-a-testing-artifact.md](docs/adr/0029-android-release-crash-was-a-testing-artifact.md).
+      **Real root cause of the launch-crash chase found — not the
+      battery, not the build type, not the signing key.** Every crash
+      was reproduced via `adb shell am start -n`, which launches the
+      Activity with a plain intent carrying no `EXTRA_ACCESSORY` — this
+      forces `MainActivity.onCreate()` through the
+      `accessoryList`/`requestOrOpen()`/`usbManager.requestPermission()`
+      fallback path (the one Phase 0 built specifically because
+      MagicOS's accessory-attach auto-launch is unreliable — see that
+      phase's notes), which appears to crash when called against an
+      app that has never been granted USB permission before. **The
+      real-world path — physically plugging the tablet in — does not
+      go through this code and is confirmed working**: live-validated
+      end-to-end with the actual signed release APK
+      (`released=1653 errors=0`, correct `1920x1200@90Hz` negotiation).
+      A live bisection (before this was understood) had already ruled
+      out `isDebuggable`, the signing key, and the release build type
+      as causes — consistent with the real cause being the launch
+      method, not the APK. Root cause of the `requestPermission()` path
+      itself crashing is not diagnosed further (this device's `logcat`
+      never produced a stack trace, consistent with it being unreliable
+      since Phase 0) — low-priority since it's a testing-tool artifact,
+      not a real user-facing path in ordinary use, but worth keeping in
+      mind if a user ever manually reopens the app before ever having
+      connected the tablet once physically.
 
 ## Phase 7 — Reliability & Polish
 
