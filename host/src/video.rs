@@ -21,22 +21,21 @@ const FRAMERATE: &str = "30";
 const GOP: &str = "60";
 
 /// Empirically-confirmed pixel-count ceiling for the target HONOR Pad
-/// X8a's AVC hardware decoder. Its vendor-declared capability XML claims
-/// a far higher ceiling (max size 4096x2176, block-count up to 34816),
-/// but real decode of the tabscreen output's native 1200x1920
-/// (2,304,000px) faults hard -- confirmed on *both* the low_latency and
-/// plain hardware decoder variants, and confirmed independent of
-/// orientation (1920x1200, same pixel count swapped to landscape, fails
-/// identically) and independent of the MediaCodec `configure()` hint
-/// (matching the real dimensions exactly just moves the failure from
-/// configure()-time to first-real-frame-time). 1920x1080 (2,073,600px --
-/// this device's declared performance-point-1920x1080 entry) decodes
-/// cleanly; the real enforced ceiling sits somewhere between the two.
-/// This constant stays safely under it, aspect ratio preserved via
-/// uniform scaling rather than width-only clamping (an earlier version
-/// of this constant capped width alone, which doesn't hold: the failure
-/// is pixel-count-driven, not width-driven).
-const MAX_ENCODE_PIXELS: u64 = 1088 * 1744;
+/// X8a's AVC hardware decoder, narrowed via a live binary search (ADR
+/// 0023's followup) that fed *real* matching content through the full
+/// host-encode/tablet-decode pipeline at each step, not just a
+/// `configure()` hint: confirmed working (`released>0 errors=0`) at
+/// 1818x1136 (2,065,248px) and confirmed failing (`CodecException
+/// errorCode=1100`) at 1820x1138 (2,071,160px) -- under 6,000px apart,
+/// good to about 0.3% precision. This constant is the exact
+/// confirmed-good value, not a rounded-down guess. Its vendor-declared
+/// capability XML claims a far higher ceiling (max size 4096x2176,
+/// block-count up to 34816) and is not a reliable source of truth here.
+/// Aspect ratio is preserved via uniform scaling rather than width-only
+/// clamping (an earlier version of this constant capped width alone,
+/// which doesn't hold: the failure is pixel-count-driven, not
+/// width-driven, confirmed independent of orientation too).
+const MAX_ENCODE_PIXELS: u64 = 1818 * 1136;
 
 pub struct VideoStream {
     child: Child,

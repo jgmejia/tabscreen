@@ -12,19 +12,16 @@ private const val MIME_TYPE = "video/avc"
 
 // This decoder (both the low_latency and plain hardware AVC variants) has
 // a real pixel-count ceiling well below its vendor-declared capability
-// XML: genuine ~2,304,000px content (the tabscreen output's native
-// resolution, either orientation) faults the codec hard on the first real
-// frame, confirmed independent of orientation and independent of this
-// configure() hint -- while 1920x1080 (2,073,600px) decodes cleanly.
-// host/src/video.rs scales its real encode output down to stay under that
-// ceiling (MAX_ENCODE_PIXELS there, same constant regardless of
-// orientation); this hint must match that real output exactly, not just
-// be "big enough", since MediaCodec's Surface-decode path still uses it
-// for buffer sizing. Update both together if that scaling ever changes.
-// Landscape (see AndroidManifest.xml's screenOrientation): 1920x1200
-// scaled down, transposed from the portrait-era 1088x1742.
-private const val HINT_WIDTH = 1742
-private const val HINT_HEIGHT = 1088
+// XML. Narrowed via a live binary search (ADR 0023's followup) feeding
+// real matching content through the full pipeline at each step, not just
+// this configure() hint: confirmed working at 2,065,248px, confirmed
+// failing at 2,071,160px -- under 6,000px apart. host/src/video.rs's
+// MAX_ENCODE_PIXELS is the source of truth for the real encode output;
+// this hint must match it exactly (not just be "big enough"), since
+// MediaCodec's Surface-decode path still uses it for buffer sizing.
+// Update both together if that scaling ever changes.
+private const val HINT_WIDTH = 1816
+private const val HINT_HEIGHT = 1136
 
 /**
  * Wraps MediaCodec's async decode-to-Surface path for the wire protocol's

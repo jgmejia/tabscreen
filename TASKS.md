@@ -729,11 +729,15 @@ content rendering correctly on the tablet.
 - [x] Capture the tabscreen output's framebuffer specifically (not the
       host's whole current screen) — done via `display.rs`/ADR 0022, and
       live-validated end-to-end per this phase's header above.
-- [ ] Narrow the real decoder pixel-count ceiling found in ADR 0023
-      (confirmed working at 1088x1742 = 1,895,296px, confirmed failing at
-      1200x1920/1920x1200 = 2,304,000px — the exact boundary between them
-      isn't known) to recover some of the ~9% linear sharpness currently
-      given up to the downscale.
+- [x] Narrow the real decoder pixel-count ceiling found in ADR 0023 —
+      done via a live binary search (ADR 0027): confirmed good at
+      2,065,248px, confirmed bad at 2,071,160px, under 6,000px apart.
+      Real encode resolution now 1816x1136 (2,063,776px, 89.6% of the
+      tabscreen output's native area), up from the original conservative
+      1088x1744 (82.4%) — `host/src/video.rs`'s `MAX_ENCODE_PIXELS` and
+      the Android client's matching `HINT_WIDTH`/`HINT_HEIGHT` both
+      updated. Live-validated sustained (3,480 frames received, 3,262
+      released, 0 errors).
 
 ## Phase 4 — Input Injection ✅ Complete (2026-08-19)
 
