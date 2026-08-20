@@ -8,4 +8,5 @@ rusb = "0.9"
 anyhow = "1"
 log = "0.4"
 env_logger = "0.11"
-x11rb = { version = "0.14", features = ["xtest"] }
+x11rb = { version = "0.14", features = ["xtest", "randr"] }
+ctrlc = { version = "3.5.2", features = ["termination"] }

@@ -24,6 +24,7 @@ import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
+import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.TextView
 import java.io.FileInputStream
@@ -107,6 +108,8 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        hideSystemBars()
+        keepScreenOnAndUnlocked()
         statusView = TextView(this)
         statusView.textSize = 20f
         statusView.setPadding(32, 64, 32, 32)
@@ -331,6 +334,55 @@ class MainActivity : Activity() {
 
     private fun setStatus(s: String) {
         runOnUiThread { statusView.text = s }
+    }
+
+    /**
+     * Acts like a real monitor, not an app -- no status/nav bar chrome.
+     * The classic `systemUiVisibility` flags (not a `WindowInsetsController`
+     * AndroidX API, which this project doesn't depend on) still work across
+     * this project's full API range (minSdk 26 - targetSdk 34) despite
+     * being deprecated. Sticky immersive: a swipe from the edge reveals the
+     * bars temporarily, then they auto-hide again -- reapplying on every
+     * `onWindowFocusChanged` (below) is the standard pattern for that,
+     * since a one-time call in `onCreate` doesn't survive it.
+     */
+    private fun hideSystemBars() {
+        @Suppress("DEPRECATION")
+        window.decorView.systemUiVisibility = (
+            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                or View.SYSTEM_UI_FLAG_FULLSCREEN
+            )
+    }
+
+    /**
+     * A monitor doesn't sleep or lock while it has a signal. Keeps the
+     * screen from dimming/timing out (`FLAG_KEEP_SCREEN_ON`), shows this
+     * activity's content over the lock screen and wakes the display if it
+     * was off (`FLAG_SHOW_WHEN_LOCKED`/`FLAG_TURN_SCREEN_ON`), and
+     * auto-dismisses the keyguard (`FLAG_DISMISS_KEYGUARD`). This only
+     * bypasses a *non-secure* lock (swipe/none, confirmed on the target
+     * tablet during testing) -- a real PIN/pattern/password is an
+     * intentional Android security boundary these flags don't and
+     * shouldn't override; the user still has to authenticate through it
+     * once if they've set one.
+     */
+    private fun keepScreenOnAndUnlocked() {
+        @Suppress("DEPRECATION")
+        window.addFlags(
+            WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                or WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+                or WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                or WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+        )
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) hideSystemBars()
     }
 
     override fun onDestroy() {

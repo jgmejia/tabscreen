@@ -1,11 +1,12 @@
 //! X11 pointer injection via the XTEST extension.
 //!
-//! Until Phase 2 lands there's no dummy RandR output to target, so this
-//! injects against the current default screen's root window instead — the
-//! wire protocol's normalized 0.0-1.0 coordinates (docs/wire-protocol.md)
-//! mean swapping the target rect for the dummy output later needs no
-//! protocol change, just a different (width, height) here.
+//! Injects against the tabscreen `vkms` output's exact rect (see
+//! `display.rs`, ADR 0021), not the whole root window -- the wire
+//! protocol's normalized 0.0-1.0 coordinates (docs/wire-protocol.md) mean
+//! this needed no protocol change, just an offset/scale computed from a
+//! different (x, y, width, height) source here.
 
+use crate::display::OutputRect;
 use crate::protocol::input::{TouchAction, TouchEvent};
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{BUTTON_PRESS_EVENT, BUTTON_RELEASE_EVENT, MOTION_NOTIFY_EVENT};
@@ -17,28 +18,22 @@ const LEFT_BUTTON: u8 = 1;
 /// there's no meaningful client-side timestamp to send instead.
 const CURRENT_TIME: u32 = 0;
 
-pub struct Injector {
-    conn: RustConnection,
+pub struct Injector<'a> {
+    conn: &'a RustConnection,
     root: u32,
-    width: u16,
-    height: u16,
+    rect: OutputRect,
 }
 
-impl Injector {
-    /// Connects to the X server named by `$DISPLAY` and captures the
-    /// default screen's root window and pixel size once at startup.
-    pub fn connect() -> anyhow::Result<Self> {
-        let (conn, screen_num) = x11rb::connect(None)?;
-        let screen = &conn.setup().roots[screen_num];
-        let root = screen.root;
-        let width = screen.width_in_pixels;
-        let height = screen.height_in_pixels;
-        Ok(Self { conn, root, width, height })
+impl<'a> Injector<'a> {
+    /// Borrows the shared X connection and targets `rect` (the activated
+    /// tabscreen output's geometry) for all injected events.
+    pub fn new(conn: &'a RustConnection, root: u32, rect: OutputRect) -> Self {
+        Self { conn, root, rect }
     }
 
     pub fn inject(&self, ev: TouchEvent) -> anyhow::Result<()> {
-        let x = (ev.x.clamp(0.0, 1.0) * self.width as f32) as i16;
-        let y = (ev.y.clamp(0.0, 1.0) * self.height as f32) as i16;
+        let x = self.rect.x + (ev.x.clamp(0.0, 1.0) * self.rect.width as f32) as i16;
+        let y = self.rect.y + (ev.y.clamp(0.0, 1.0) * self.rect.height as f32) as i16;
 
         self.conn
             .xtest_fake_input(MOTION_NOTIFY_EVENT, 0, CURRENT_TIME, self.root, x, y, 0)?

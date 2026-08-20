@@ -5,33 +5,38 @@
 //! pipeline (x11grab + VAAPI h264_vaapi) empirically against this hardware,
 //! so v1 shells out to it rather than reinventing it.
 //!
-//! Captures the *current default screen* until Phase 2 lands a dummy
-//! output to target instead (see docs/wire-protocol.md's VIDEO section and
-//! ADR 0006) — swapping the target later is a command-line change here,
-//! not a wire-format change.
+//! Captures the tabscreen `vkms` output's exact rect (see `display.rs`,
+//! ADR 0021) rather than the whole X11 screen -- `main.rs` activates that
+//! output and passes its geometry in here per connection.
 
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 
-use x11rb::connection::Connection;
+use crate::display::OutputRect;
 
 const VAAPI_RENDER_NODE: &str = "/dev/dri/renderD128"; // confirmed the Intel iGPU in Phase 0
 const BITRATE: &str = "8M";
 const FRAMERATE: &str = "30";
 const GOP: &str = "60";
 
-/// Ceiling on the encoded width, aspect ratio preserved. The host's own
-/// screen (captured as today's Phase-2-blocked stand-in target -- see
-/// docs/wire-protocol.md's VIDEO section) can easily exceed what a budget
-/// tablet's hardware decoder actually supports: confirmed against the
-/// target HONOR Pad X8a that its low-latency AVC decoder variant reports a
-/// hard ~1920px width ceiling, and feeding it a larger real SPS (e.g. this
-/// dev machine's native 2560x1600) doesn't gracefully downscale -- it
-/// faults the codec outright after a handful of frames. Once Phase 2
-/// lands, capture targets the dummy output sized to the tablet's own
-/// panel instead, which won't need this scale-down at all.
-const MAX_ENCODE_WIDTH: u32 = 1280;
+/// Empirically-confirmed pixel-count ceiling for the target HONOR Pad
+/// X8a's AVC hardware decoder. Its vendor-declared capability XML claims
+/// a far higher ceiling (max size 4096x2176, block-count up to 34816),
+/// but real decode of the tabscreen output's native 1200x1920
+/// (2,304,000px) faults hard -- confirmed on *both* the low_latency and
+/// plain hardware decoder variants, and confirmed independent of
+/// orientation (1920x1200, same pixel count swapped to landscape, fails
+/// identically) and independent of the MediaCodec `configure()` hint
+/// (matching the real dimensions exactly just moves the failure from
+/// configure()-time to first-real-frame-time). 1920x1080 (2,073,600px --
+/// this device's declared performance-point-1920x1080 entry) decodes
+/// cleanly; the real enforced ceiling sits somewhere between the two.
+/// This constant stays safely under it, aspect ratio preserved via
+/// uniform scaling rather than width-only clamping (an earlier version
+/// of this constant capped width alone, which doesn't hold: the failure
+/// is pixel-count-driven, not width-driven).
+const MAX_ENCODE_PIXELS: u64 = 1088 * 1744;
 
 pub struct VideoStream {
     child: Child,
@@ -55,21 +60,28 @@ impl VideoStream {
 
 /// Spawns the capture+encode pipeline and returns a [`VideoStream`] that
 /// yields one Annex-B NAL unit (start code included) per [`VideoStream::recv`]
-/// call, in encode order.
-pub fn spawn_encoder() -> anyhow::Result<VideoStream> {
-    let (width, height) = query_screen_size()?;
+/// call, in encode order. Captures exactly `rect` (the activated tabscreen
+/// output's geometry), not the whole X11 screen.
+pub fn spawn_encoder(rect: &OutputRect) -> anyhow::Result<VideoStream> {
+    let (width, height) = (rect.width, rect.height);
     let display = std::env::var("DISPLAY").unwrap_or_else(|_| ":0".to_string());
 
-    // Even-dimensioned encode target (yuv420p/nv12 requires it), capped to
-    // MAX_ENCODE_WIDTH with aspect ratio preserved.
-    let (encode_width, encode_height) = if width as u32 > MAX_ENCODE_WIDTH {
-        let scaled_height = (height as u64 * MAX_ENCODE_WIDTH as u64 / width as u64) as u32;
-        (MAX_ENCODE_WIDTH & !1, scaled_height & !1)
+    // Even-dimensioned encode target (yuv420p/nv12 requires it), scaled
+    // uniformly (aspect ratio preserved) if needed to stay under
+    // MAX_ENCODE_PIXELS.
+    let area = width as u64 * height as u64;
+    let (encode_width, encode_height) = if area > MAX_ENCODE_PIXELS {
+        let scale = (MAX_ENCODE_PIXELS as f64 / area as f64).sqrt();
+        (
+            (((width as f64 * scale) as u32) & !1).max(2),
+            (((height as f64 * scale) as u32) & !1).max(2),
+        )
     } else {
         (width as u32 & !1, height as u32 & !1)
     };
     log::info!(
-        "starting video capture: {display} {width}x{height} -> scale {encode_width}x{encode_height} -> VAAPI h264 @ {BITRATE}"
+        "starting video capture: {display}+{},{} {width}x{height} -> scale {encode_width}x{encode_height} -> VAAPI h264 @ {BITRATE}",
+        rect.x, rect.y
     );
 
     let mut child = Command::new("ffmpeg")
@@ -78,7 +90,7 @@ pub fn spawn_encoder() -> anyhow::Result<VideoStream> {
             "-f", "x11grab",
             "-framerate", FRAMERATE,
             "-video_size", &format!("{width}x{height}"),
-            "-i", &format!("{display}+0,0"),
+            "-i", &format!("{display}+{},{}", rect.x, rect.y),
             "-vaapi_device", VAAPI_RENDER_NODE,
             "-vf", &format!("scale={encode_width}:{encode_height},format=nv12,hwupload"),
             "-c:v", "h264_vaapi",
@@ -155,12 +167,6 @@ fn find_start_codes(buf: &[u8]) -> Vec<usize> {
         }
     }
     out
-}
-
-fn query_screen_size() -> anyhow::Result<(u16, u16)> {
-    let (conn, screen_num) = x11rb::connect(None)?;
-    let screen = &conn.setup().roots[screen_num];
-    Ok((screen.width_in_pixels, screen.height_in_pixels))
 }
 
 #[cfg(test)]

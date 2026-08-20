@@ -1,4 +1,5 @@
 mod aoa;
+mod display;
 mod input;
 mod protocol;
 mod video;
@@ -7,20 +8,74 @@ use protocol::{control, Channel, Frame, FrameReader};
 use rusb::{DeviceHandle, GlobalContext};
 use std::sync::Arc;
 use std::time::Duration;
+use x11rb::connection::Connection;
+use x11rb::rust_connection::RustConnection;
+
+/// HONOR Pad X8a's confirmed real panel spec (Phase 0), used landscape --
+/// the user runs it rotated 90° from native (`android:screenOrientation
+///="landscape"` in the manifest; the tablet's own rotation lock must be
+/// set to match, not auto-rotate, or the orientation mismatch letterboxes
+/// the surface -- see ADR 0023's orientation-mismatch finding). Placeholder
+/// until Phase 5 negotiates the actual connected tablet's mode over the
+/// wire instead of assuming this one.
+const TABLET_WIDTH: u32 = 1920;
+const TABLET_HEIGHT: u32 = 1200;
+const TABLET_REFRESH_HZ: u32 = 60;
+
+/// `Placement::Left` was tried live (2026-08-20) and reverted: shifting
+/// real outputs via sequential per-output `xrandr --pos` calls hit GNOME/
+/// mutter reactively re-laying-out *all* outputs between each call,
+/// producing an unpredictable final layout (twice, on the same session --
+/// see the conversation, not yet written up as an ADR). A single atomic
+/// `xrandr` command covering every `--output`/`--pos` pair together
+/// looked like it might fix it (confirmed only for a manual restore, not
+/// yet tried for the actual shift), but wasn't retested live after two
+/// live disruptions in a row. `Right` never touches the real outputs at
+/// all and has caused zero issues -- stick with it unless that atomic-
+/// command fix is actually implemented and carefully retested.
+const PLACEMENT: display::Placement = display::Placement::Right;
 
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    let injector = match input::Injector::connect() {
-        Ok(i) => Some(i),
+    // Ctrl+C (SIGINT) or a plain `kill`/`timeout`/systemd stop (SIGTERM)
+    // otherwise abort the process before ActiveOutput::drop gets a chance
+    // to run its own cleanup -- confirmed live (2026-08-20) that Ctrl+C
+    // without this left the tablet's RandR output frozen active, needing
+    // a manual `xrandr --off` to recover; separately confirmed `timeout`
+    // sends SIGTERM, not SIGINT, and left the same mess since ctrlc's
+    // default build only covers SIGINT -- the `termination` feature
+    // (Cargo.toml) is what extends this handler to SIGTERM/SIGHUP too,
+    // which matters once Phase 6 wraps this in a systemd service (whose
+    // stop mechanism is SIGTERM). Opens its own short-lived X11
+    // connection rather than sharing the main one, since the handler
+    // runs on its own thread at an arbitrary point in the program and a
+    // signal can arrive mid-connection-setup, before `x11` below is even
+    // established.
+    ctrlc::set_handler(|| {
+        log::info!("interrupted, cleaning up before exit...");
+        if let Ok((conn, screen_num)) = x11rb::connect(None) {
+            let root = conn.setup().roots[screen_num].root;
+            display::deactivate_any_active(&conn, root);
+        }
+        std::process::exit(130);
+    })
+    .expect("failed to install Ctrl+C handler");
+
+    let x11 = match x11rb::connect(None) {
+        Ok((conn, screen_num)) => {
+            let root = conn.setup().roots[screen_num].root;
+            display::heal_layout_gap(&conn, root);
+            Some((conn, root))
+        }
         Err(e) => {
-            log::warn!("X11 XTEST injector unavailable, INPUT frames will be dropped: {e:#}");
+            log::warn!("X11 connection unavailable, virtual display/input support disabled: {e:#}");
             None
         }
     };
 
     loop {
-        if let Err(e) = run_one_connection(injector.as_ref()) {
+        if let Err(e) = run_one_connection(x11.as_ref()) {
             log::error!("connection cycle ended: {e:#}");
         }
         log::info!("retrying in 2s...");
@@ -28,7 +83,7 @@ fn main() {
     }
 }
 
-fn run_one_connection(injector: Option<&input::Injector>) -> anyhow::Result<()> {
+fn run_one_connection(x11: Option<&(RustConnection, u32)>) -> anyhow::Result<()> {
     // A prior connection may have ended without a physical unplug (app
     // crash, permission revoked, host-side error) — in that case the
     // device is still sitting in accessory mode and there's no need (or
@@ -64,16 +119,43 @@ fn run_one_connection(injector: Option<&input::Injector>) -> anyhow::Result<()> 
     handle.write_bulk(ep_out, &hello, Duration::from_secs(10))?;
     log::info!("sent HELLO");
 
-    match video::spawn_encoder() {
-        Ok(stream) => {
-            let video_handle = handle.clone();
-            // Self-terminating: exits (and stops ffmpeg) once a write fails,
-            // which happens naturally once this connection ends — not
-            // joined here, so a brief overlap with the next connection
-            // cycle's own video thread is possible but harmless.
-            std::thread::spawn(move || video_writer_loop(video_handle, ep_out, stream));
+    // Activated for the lifetime of this connection cycle only -- dropping
+    // `active_output` (any exit path: error, unplug, normal return) turns
+    // the tabscreen output back off via its Drop impl.
+    let active_output = match x11 {
+        Some((conn, root)) => {
+            match display::activate(conn, *root, TABLET_WIDTH, TABLET_HEIGHT, TABLET_REFRESH_HZ, PLACEMENT) {
+                Ok(a) => Some(a),
+                Err(e) => {
+                    log::warn!("virtual display activation failed, video/input disabled for this connection: {e:#}");
+                    None
+                }
+            }
         }
-        Err(e) => log::warn!("video capture/encode unavailable, streaming disabled: {e:#}"),
+        None => None,
+    };
+
+    let injector = match (x11, &active_output) {
+        (Some((conn, root)), Some(active)) => Some(input::Injector::new(conn, *root, active.rect)),
+        _ => None,
+    };
+    if injector.is_none() {
+        log::warn!("X11 XTEST injector unavailable, INPUT frames will be dropped");
+    }
+
+    match &active_output {
+        Some(active) => match video::spawn_encoder(&active.rect) {
+            Ok(stream) => {
+                let video_handle = handle.clone();
+                // Self-terminating: exits (and stops ffmpeg) once a write fails,
+                // which happens naturally once this connection ends — not
+                // joined here, so a brief overlap with the next connection
+                // cycle's own video thread is possible but harmless.
+                std::thread::spawn(move || video_writer_loop(video_handle, ep_out, stream));
+            }
+            Err(e) => log::warn!("video capture/encode unavailable, streaming disabled: {e:#}"),
+        },
+        None => log::warn!("no active virtual display, video streaming disabled"),
     }
 
     let mut reader = FrameReader::new();
@@ -83,7 +165,7 @@ fn run_one_connection(injector: Option<&input::Injector>) -> anyhow::Result<()> 
             Ok(n) => {
                 reader.feed(&buf[..n]);
                 while let Some(frame) = reader.try_read_frame()? {
-                    handle_frame(frame, injector);
+                    handle_frame(frame, injector.as_ref());
                 }
             }
             Err(rusb::Error::Timeout) => continue,
@@ -114,7 +196,7 @@ fn video_writer_loop(handle: Arc<DeviceHandle<GlobalContext>>, ep_out: u8, strea
     }
 }
 
-fn handle_frame(frame: Frame, injector: Option<&input::Injector>) {
+fn handle_frame(frame: Frame, injector: Option<&input::Injector<'_>>) {
     match frame.channel {
         Channel::Control => {
             if frame.payload.first() == Some(&control::HELLO_ACK) {

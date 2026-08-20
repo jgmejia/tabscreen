@@ -613,42 +613,98 @@ path regardless, tracked as Phase 7/8 polish.
       `Virtual-2-1` correctly rendered in its true portrait orientation
       (1200 wide × 1920 tall). Satisfies `CLAUDE.md`'s core requirement —
       a real, arandr-manageable RandR output.
-- [ ] Check whether `vkms`'s configfs interface (if present in this
-      kernel) supports EDID injection, to reuse the already-validated
-      `host/resources/edid/tabscreen-honor-pad-x8a.bin` — otherwise the
-      `--newmode` approach above is sufficient on its own.
-- [ ] Write installer step: `/etc/modules-load.d/vkms.conf` plus whatever
+- [x] Checked `vkms`'s configfs interface: it exists on this kernel
+      (`/sys/kernel/config/vkms`, confirmed present) but is empty — the
+      working `Virtual-2-1` comes from the module's own default-device
+      creation, not configfs. Using it for EDID injection would mean
+      building a whole device from scratch (planes/crtcs/encoders/
+      connectors wired via symlinks), real complexity for no benefit
+      since `--newmode` already fully works. Not pursued; only worth
+      revisiting if Phase 7's multi-tablet support ends up needing
+      configfs-based device creation anyway (that's the actual reason to
+      touch it, not EDID).
+- [x] Write installer step: `/etc/modules-load.d/vkms.conf` plus whatever
       mode/EDID setup is confirmed above — no DKMS build step needed,
       much simpler than the `evdi` install path would have been.
-- [ ] Host daemon: on tablet connect, activate the output with the
-      tablet's mode and position; on disconnect, deactivate it.
+      `host/src/display.rs`'s `activate()` handles mode
+      registration/positioning at runtime via `xrandr`; the only static
+      installer piece needed is the one-line `vkms` module-load config
+      (`echo vkms | sudo tee /etc/modules-load.d/vkms.conf`) — captured
+      as a real installer script still TODO in Phase 6, not done here.
+- [x] Host daemon: on tablet connect, activate the output with the
+      tablet's mode and position; on disconnect, deactivate it. Implemented
+      in `host/src/display.rs` (`activate()`/`ActiveOutput`'s `Drop` impl)
+      and wired into `host/src/main.rs`'s `run_one_connection()` — the
+      output is activated right after the AOA `HELLO` and deactivated
+      automatically (via `Drop`) whenever that connection cycle ends, for
+      any reason (unplug, error, or normal return). Position is computed
+      dynamically each time (rightmost edge of currently-active real
+      outputs), not hardcoded to this dev machine's `+6400+0` layout.
+      Live-validated in isolation against the real X session (a throwaway
+      `#[ignore]`d test, deleted after confirming, same pattern used for
+      Phase 4's XTEST validation): `activate()` correctly computed
+      `+6400+0` and set `1200x1920`, `drop()` cleanly turned it back off.
+      **Now also validated with a real tablet physically connected**,
+      multiple times (2026-08-20) — full pipeline confirmed working
+      end-to-end (video decoding, `released>0 errors=0`; see ADR 0023).
+      Contrary to the original note here: `sudo` turned out not to be
+      required in this environment once the AOA device is already in
+      accessory mode from a prior session — worth trying without it
+      first. Also fixed (ADR 0025): the daemon had no signal handler, so
+      Ctrl+C/`SIGTERM` aborted it without running `ActiveOutput::drop`,
+      leaving the tabscreen output frozen active — a `ctrlc`-based
+      handler (with the `termination` feature, for `SIGTERM`/`SIGHUP` too
+      — directly relevant once Phase 6's systemd service stops the daemon
+      via `SIGTERM`) now runs the same cleanup on any of these signals.
+- [x] `host/src/video.rs` and `host/src/input.rs` now target the activated
+      output's real rect (`display::OutputRect`) instead of the whole X11
+      screen / root window — `video.rs`'s x11grab offset and
+      `input.rs`'s `Injector` coordinate mapping both use it. Graceful
+      degradation preserved if X11 is entirely unavailable (existing
+      pattern: warn, drop INPUT frames / disable streaming) but no longer
+      falls back to whole-screen capture once X11 is available — that
+      placeholder is what this item retires.
 - [ ] Handle the "no free output available" case (e.g. a second tablet)
       with a clear error — `vkms` only creates one default device without
       additional configfs-based configuration; multi-tablet support
       (Phase 7's open question) needs revisiting against this constraint.
+      `display::activate()` currently just picks the first `Virtual-*`
+      output found; with only one such output ever present today, a
+      second tablet would silently collide onto the same output rather
+      than erroring clearly — worth an explicit check before Phase 7.
 
-## Phase 3 — Video Pipeline ✅ Core pipeline validated live (2026-08-19)
+## Phase 3 — Video Pipeline ✅ Validated live against the real tabscreen output (2026-08-20)
 
-Not blocked by Phase 2 — captures the host's own current screen as a
-stand-in target (same placeholder approach `host/src/input.rs` already
-used for Phase 4, per [ADR 0006](docs/adr/0006-dummy-driver-multi-gpu-binding-failure.md)).
+Originally captured the host's own current screen as a stand-in target
+(same placeholder approach `host/src/input.rs` used for Phase 4, per
+[ADR 0006](docs/adr/0006-dummy-driver-multi-gpu-binding-failure.md)).
 Getting the Android decode side working against the real tablet took five
 separate, initially-indistinguishable failure modes to work through —
 full writeup in
 [docs/adr/0007-mediacodec-low-latency-decoder-constraints.md](docs/adr/0007-mediacodec-low-latency-decoder-constraints.md).
-Validated live: 1680 frames received, 1623 released, zero errors over a
-sustained ~28s test, tablet visibly mirroring the host's desktop in real
-time.
+
+**Update (2026-08-20):** once Phase 2 landed, pointing this pipeline at
+the real `vkms` output's native 1200×1920 geometry (ADR 0022) exposed a
+sixth failure mode: the target decoder has a real pixel-count ceiling
+well below its declared capability XML, and hard-fails on genuine
+1200×1920 content regardless of orientation or decode hint. Full
+investigation and fix (encode output scaled down to 1088×1742, aspect
+preserved) in
+[docs/adr/0023-decoder-pixel-count-ceiling.md](docs/adr/0023-decoder-pixel-count-ceiling.md).
+**Validated live end-to-end against the real HONOR Pad X8a with the real
+tabscreen output as the capture target** (not the placeholder): 1560
+frames received, 1507 released, zero errors, the host's actual desktop
+content rendering correctly on the tablet.
 
 - [x] Host: hardware-accelerated H.264 encode via VAAPI on the Intel iGPU.
       `host/src/video.rs` shells out to `ffmpeg` (x11grab capture +
       `h264_vaapi` encode, `-bf 0`/`-sei 0` tuned per ADR 0007) rather than
       reimplementing X11 capture and VAAPI encoding directly in Rust —
       Phase 0 already validated this exact pipeline shape empirically.
-      Encode width is capped (`MAX_ENCODE_WIDTH`, currently 1280) since the
-      host's own screen can exceed the tablet's real decoder capability
-      (ADR 0007 finding 5); this stops mattering once Phase 2's dummy
-      output (sized to the tablet's own panel) replaces this stand-in.
+      Encode output is scaled to stay under `MAX_ENCODE_PIXELS` (aspect
+      ratio preserved) — superseded the original width-only
+      `MAX_ENCODE_WIDTH` cap once ADR 0023 found the real constraint is
+      pixel-count-driven, not width-driven.
 - [x] Host: send encoded frames over the Phase 1 transport's video channel
       — one Annex-B NAL unit per `VIDEO` frame, defined in
       `docs/wire-protocol.md`'s new VIDEO section.
@@ -666,11 +722,18 @@ time.
       strictly harder bar.
 - [ ] Rigorous latency measurement (e.g. timestamped round trip) and
       formal bitrate/resolution tuning against the Phase 0 AOA throughput
-      ceiling — not done yet; current settings (8Mbps, 1280px-wide,
-      30fps target) were validated for stability, not tuned for quality
-      or measured for latency.
-- [ ] Capture the *dummy output's* framebuffer specifically (not the
-      host's whole current screen) — blocked on Phase 2.
+      ceiling — not done yet; current settings (8Mbps, 30fps target,
+      1088x1742 real encode output post-ADR-0023 downscale) were
+      validated for stability, not tuned for quality or measured for
+      latency.
+- [x] Capture the tabscreen output's framebuffer specifically (not the
+      host's whole current screen) — done via `display.rs`/ADR 0022, and
+      live-validated end-to-end per this phase's header above.
+- [ ] Narrow the real decoder pixel-count ceiling found in ADR 0023
+      (confirmed working at 1088x1742 = 1,895,296px, confirmed failing at
+      1200x1920/1920x1200 = 2,304,000px — the exact boundary between them
+      isn't known) to recover some of the ~9% linear sharpness currently
+      given up to the downscale.
 
 ## Phase 4 — Input Injection ✅ Complete (2026-08-19)
 
@@ -715,10 +778,23 @@ real HONOR Pad X8a.
       `xdotool click` first, so the absence of an event would have meant
       something). No errors in the host log throughout.
 - [ ] Verify coordinate mapping is correct across output position/rotation
-      changes made via arandr — blocked on Phase 2 (no dummy output to
-      reposition yet).
+      changes made via arandr — no longer blocked (`host/src/input.rs`'s
+      `Injector` now maps into the real tabscreen output's rect, offset
+      included, per ADR 0022). Spot-checked via `adb shell input tap`
+      against the real tablet (2026-08-20): a center tap landed in the
+      right output (`x` within `Virtual-2-1`'s 6400-7600 range) but not
+      pixel-exact, and repeating the identical tap gave a different
+      result each time (~70px variance); a corner tap (100,100) landed
+      **outside** the output entirely (`x=1363`, within `eDP-1`'s range).
+      Inconclusive, not a confirmed bug in `Injector` itself — this
+      project's own Phase 4 validation originally used real physical
+      finger drags specifically because `adb`-synthetic touch isn't a
+      reliable stand-in (screen insets/cutouts can distort the synthetic
+      event's coordinate space in ways a real touch wouldn't hit the same
+      way). Needs a real-finger re-check, not another `adb` attempt.
 
-Phase 4 is otherwise complete; the remaining item is blocked on Phase 2.
+Phase 4 is otherwise complete; the remaining item just needs a live
+re-check with real touch now that Phase 2 is unblocked.
 
 ## Phase 5 — Mode Negotiation
 
