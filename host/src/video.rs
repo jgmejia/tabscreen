@@ -17,23 +17,27 @@ use crate::display::OutputRect;
 
 const VAAPI_RENDER_NODE: &str = "/dev/dri/renderD128"; // confirmed the Intel iGPU in Phase 0
 const BITRATE: &str = "8M";
-// Was hardcoded to 30 since early testing and never revisited even after
-// Phase 5 negotiation started reporting the tablet's real refresh rate
-// (90Hz) -- a real, measurable source of latency/smoothness the user
-// noticed live (2026-08-20). Raised to 90 first (see ADR 0030), which
-// looked clean in a short live test, but longer real use surfaced
-// `x11grab`/ffmpeg logging "frame duplication too large, skipping"
-// repeatedly -- x11grab can't actually sustain real captures at 90fps
-// (likely its own polling/XGetImage overhead, not a VAAPI/decoder
-// limit), so ffmpeg pads with duplicate frames to hit the target rate
-// and eventually hits an internal safety cutoff, at which point it
-// stops producing real output entirely -- the frozen-video symptom the
-// user hit live. Reverted to 60 (also live-validated clean, and half
-// the duplicate-padding pressure of 90) pending a real fix -- possibly
-// confirming MIT-SHM is actually in use, or capping at whatever
-// x11grab's real sustained capture rate genuinely is on this hardware,
-// neither of which has been measured yet.
-const FRAMERATE: &str = "60";
+// History (2026-08-20): raised from the original 30 to 90 (ADR 0030),
+// then reverted to 60 after longer use revealed x11grab can't sustain 90
+// -- ffmpeg's duplicate-frame padding hit an internal cutoff and the
+// video silently froze (ADR 0031). 60 *decoded* fine, but live use
+// surfaced a second, more serious problem 60 shares with 90: `ffmpeg`
+// alone was measured at 158% CPU sustained (`ps aux`), which the user
+// felt directly as system-wide keyboard input lag and very likely
+// contributed to sporadic visual glitching seen on the *real* monitors
+// too (not just the tablet -- x11grab is read-only, so real-monitor
+// corruption has to come from something upstream of it, most plausibly
+// mutter/the compositor being starved under this load, not a genuine
+// GPU/driver fault -- dmesg and thermal sensors were clean). Back to the
+// original 30: Phase 0 confirmed VAAPI encode itself is cheap (16.4x
+// realtime), so this CPU cost is overwhelmingly x11grab's own capture
+// mechanism, and halving the capture rate again is the most direct lever
+// available without switching capture approach entirely (see ADR 0031's
+// still-open MIT-SHM question). Deliberately trading stream smoothness
+// for the user's actual ability to use their own machine while
+// connected -- not a final answer, just the safe default until the real
+// capture-cost problem is fixed.
+const FRAMERATE: &str = "30";
 const GOP: &str = "60";
 
 /// Empirically-confirmed pixel-count ceiling for the target HONOR Pad
@@ -107,7 +111,15 @@ pub fn spawn_encoder(rect: &OutputRect) -> anyhow::Result<VideoStream> {
             "-video_size", &format!("{width}x{height}"),
             "-i", &format!("{display}+{},{}", rect.x, rect.y),
             "-vaapi_device", VAAPI_RENDER_NODE,
-            "-vf", &format!("scale={encode_width}:{encode_height},format=nv12,hwupload"),
+            // hwupload the raw captured frame immediately and do
+            // scaling/format conversion on the GPU (scale_vaapi) rather
+            // than CPU-scaling before upload -- confirmed live
+            // (2026-08-20) this cuts ffmpeg's CPU usage roughly 4.5x
+            // (69% -> 15% in a controlled comparison) for identical
+            // output, which is what the X server's single-threaded
+            // request loop was actually starved by (not encode cost --
+            // Phase 0 already confirmed VAAPI encode itself is cheap).
+            "-vf", &format!("hwupload,scale_vaapi=w={encode_width}:h={encode_height}:format=nv12"),
             "-c:v", "h264_vaapi",
             "-bf", "0",
             "-g", GOP,

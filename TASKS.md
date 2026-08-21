@@ -737,17 +737,38 @@ content rendering correctly on the tablet.
       [docs/adr/0030-encode-framerate-raised-to-90.md](docs/adr/0030-encode-framerate-raised-to-90.md)
       and
       [docs/adr/0031-90fps-reverted-frame-duplication-failure.md](docs/adr/0031-90fps-reverted-frame-duplication-failure.md).
-      60fps itself has only had a short soak test — worth a longer
-      unattended run before fully trusting it, and the real fix (confirm
-      MIT-SHM is in use, measure this hardware's actual sustained
-      capture rate) is still open.
+      **Reverted again, to 30fps**, after live use surfaced a deeper
+      problem even at 60fps: `ffmpeg` sustained 158% CPU, causing
+      real, felt system-wide keyboard lag and visual glitches on the
+      *real* monitors (not just the tablet). Root-caused and fixed in
+      two parts, full writeup in
+      [docs/adr/0032-gpu-scaling-fix-and-x-server-serialization-ceiling.md](docs/adr/0032-gpu-scaling-fix-and-x-server-serialization-ceiling.md):
+      (1) `ffmpeg`'s `-vf` chain was scaling on the CPU before GPU
+      upload — switched to `hwupload,scale_vaapi=...` (scale on the
+      GPU instead), cutting `ffmpeg` CPU ~4.5x (99%→17% at 30fps,
+      live-verified) and eliminating the visual glitches entirely;
+      (2) the remaining keyboard lag is Xorg's own single-threaded
+      request-processing cost (confirmed via `top -H`), tied to
+      capture *frequency* not per-frame cost — confirmed MIT-SHM is
+      genuinely in use (not a slow fallback path, closing ADR 0031's
+      open question) via `ffmpeg`'s attached shm segments in
+      `/proc/<pid>/maps`, so this is an inherent ceiling, not a missing
+      optimization. RAM/swap checked and ruled out separately
+      (`free`/`swapon` showed no swap usage). User explicitly chose to
+      hold at 30fps rather than trade further stream smoothness for
+      lag once this was understood.
 - [ ] Rigorous latency measurement (e.g. timestamped round trip) and
       formal bitrate/resolution tuning against the Phase 0 AOA throughput
-      ceiling — still not done; current settings (8Mbps, 90fps,
+      ceiling — still not done; current settings (8Mbps, 30fps,
       1816x1136 real encode output post-ADR-0027 downscale) were
       validated for stability, not tuned for quality or measured for
-      latency. The framerate bump (above) is a reasoned improvement to a
-      known contributor, not a measured before/after latency number.
+      latency.
+- [ ] A genuinely different capture mechanism that doesn't route
+      through X11's request protocol (e.g. reading the `vkms`
+      framebuffer directly via DRM/KMS) is the only remaining lever
+      for the Xorg single-thread request-serialization ceiling found
+      in ADR 0032 — a real architecture change, not attempted, out of
+      scope unless this becomes a higher priority than it is today.
 - [x] Capture the tabscreen output's framebuffer specifically (not the
       host's whole current screen) — done via `display.rs`/ADR 0022, and
       live-validated end-to-end per this phase's header above.
