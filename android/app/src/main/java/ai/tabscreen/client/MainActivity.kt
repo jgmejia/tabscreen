@@ -100,6 +100,7 @@ class MainActivity : Activity() {
                 UsbManager.ACTION_USB_ACCESSORY_DETACHED -> {
                     Log.i(TAG, "runtime DETACHED broadcast: $accessory")
                     closeConnection()
+                    showStatusOverlay()
                     setStatus("Disconnected. Waiting for accessory...")
                     startPolling()
                 }
@@ -318,10 +319,12 @@ class MainActivity : Activity() {
             Log.e(TAG, "read loop error", e)
             setStatus("Error: ${e.message}. Waiting for reconnect...")
         }
-        // Whether from EOF or an error, the connection is over; start
-        // polling for a fresh accessory rather than sitting idle. Physical
-        // unplugs also fire DETACHED (see usbReceiver), which calls this
-        // redundantly but harmlessly (startPolling is idempotent).
+        // Whether from EOF or an error, the connection is over; bring the
+        // status overlay back (hideStatusOverlay() suppressed it once video
+        // started) and start polling for a fresh accessory rather than
+        // sitting idle. Physical unplugs also fire DETACHED (see
+        // usbReceiver), which calls startPolling redundantly but harmlessly.
+        showStatusOverlay()
         startPolling()
     }
 
@@ -342,8 +345,11 @@ class MainActivity : Activity() {
             Channel.VIDEO -> {
                 videoDecoder?.feed(frame.payload)
                 videoFrameCount++
+                if (videoFrameCount == 1) hideStatusOverlay()
                 // logcat is confirmed unreliable on this device/OS (Phase 0)
-                // -- the on-screen counter is the debuggable signal instead.
+                // -- the on-screen counter is the debuggable signal instead,
+                // kept updated (even while hidden) so it's current if
+                // showStatusOverlay() ever needs to bring it back.
                 // Throttled since setStatus() posts to the UI thread.
                 if (videoFrameCount % 30 == 0) refreshStatus()
             }
@@ -364,6 +370,22 @@ class MainActivity : Activity() {
 
     private fun setStatus(s: String) {
         runOnUiThread { statusView.text = s }
+    }
+
+    /**
+     * Acts like a real monitor once content is actually flowing -- the
+     * debug status text (connection state, frame/decoder counters) is
+     * useful while connecting or troubleshooting, but shouldn't sit on top
+     * of the live video during ordinary use. Hidden on the first VIDEO
+     * frame, brought back automatically once streaming stops (see
+     * runReadLoop) so it's there again if a reconnect needs debugging.
+     */
+    private fun hideStatusOverlay() {
+        runOnUiThread { statusView.visibility = View.GONE }
+    }
+
+    private fun showStatusOverlay() {
+        runOnUiThread { statusView.visibility = View.VISIBLE }
     }
 
     /**
