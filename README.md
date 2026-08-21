@@ -185,3 +185,15 @@ sources" for that source app the first time.
 - **GDM greeter behavior with `vkms` active is unverified** — should be
   fine (this failure mode was NVIDIA-`ConnectedMonitor`-specific, not a
   `vkms` property), but hasn't actually been tested.
+- **Manually reconfiguring monitors in arandr while connected carries a
+  small risk of crashing the whole X session**, on this machine's
+  three-provider GPU topology (NVIDIA + Intel + `vkms`) — seen once, a
+  fatal `RRSetProviderOutputSource` error, most likely mutter's own
+  multi-GPU output-routing logic reacting badly to `vkms` being a
+  genuinely separate RandR provider (see
+  [ADR 0034](docs/adr/0034-full-x-session-crash-during-arandr-reconfiguration.md)).
+  Not caused by tabscreen's own code and not independently fixable from
+  here, but recovery is fully automatic: GDM rebuilds the session and
+  `tabscreen.service` (already auto-starting, plus its own encoder-death/
+  output-drift recovery — [ADR 0033](docs/adr/0033-automatic-recovery-from-dead-encoder-and-output-drift.md))
+  comes back on its own within seconds, no manual steps needed.
