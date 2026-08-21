@@ -6,8 +6,9 @@ mod video;
 
 use protocol::{control, Channel, Frame, FrameReader};
 use rusb::{DeviceHandle, GlobalContext};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use x11rb::connection::Connection;
 use x11rb::rust_connection::RustConnection;
 
@@ -43,6 +44,23 @@ const HELLO_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 /// all and has caused zero issues -- stick with it unless that atomic-
 /// command fix is actually implemented and carefully retested.
 const PLACEMENT: display::Placement = display::Placement::Right;
+
+/// Bounds how long the main INPUT-reading loop can block on a single read
+/// before waking to run the periodic health check below, even if the
+/// tablet sends no touch input at all. Was 30s (sized for the read call
+/// alone, never deliberately tuned) -- shortened so a dead video encoder
+/// or a drifted output position (ADR 0032: a live layout change silently
+/// moved the tabscreen output while `ffmpeg` kept capturing its stale old
+/// offset until it hard-failed) gets noticed and recovered from promptly,
+/// instead of the connection silently sitting broken until something else
+/// happens to end it.
+const READ_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// How often the health check below actually runs. Decoupled from
+/// `READ_TIMEOUT` so a burst of touch input (which makes the read loop
+/// iterate far more often than once per `READ_TIMEOUT`) doesn't turn this
+/// into an X11 round-trip on every single read.
+const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -178,33 +196,98 @@ fn run_one_connection(x11: Option<&(RustConnection, u32)>) -> anyhow::Result<()>
         log::warn!("X11 XTEST injector unavailable, INPUT frames will be dropped");
     }
 
-    match &active_output {
+    // `Some` only when an encoder was actually spawned -- tracks whether
+    // its writer thread is still alive, so the health check below knows
+    // whether "no video" is expected (never started) or a real failure
+    // (started, then died).
+    let video_alive: Option<Arc<AtomicBool>> = match &active_output {
         Some(active) => match video::spawn_encoder(&active.rect) {
             Ok(stream) => {
+                let alive = Arc::new(AtomicBool::new(true));
+                let alive_for_thread = alive.clone();
                 let video_handle = handle.clone();
                 // Self-terminating: exits (and stops ffmpeg) once a write fails,
                 // which happens naturally once this connection ends — not
                 // joined here, so a brief overlap with the next connection
                 // cycle's own video thread is possible but harmless.
-                std::thread::spawn(move || video_writer_loop(video_handle, ep_out, stream));
+                std::thread::spawn(move || video_writer_loop(video_handle, ep_out, stream, alive_for_thread));
+                Some(alive)
             }
-            Err(e) => log::warn!("video capture/encode unavailable, streaming disabled: {e:#}"),
+            Err(e) => {
+                log::warn!("video capture/encode unavailable, streaming disabled: {e:#}");
+                None
+            }
         },
-        None => log::warn!("no active virtual display, video streaming disabled"),
-    }
+        None => {
+            log::warn!("no active virtual display, video streaming disabled");
+            None
+        }
+    };
 
+    let mut last_health_check = Instant::now();
     loop {
-        match handle.read_bulk(ep_in, &mut buf, Duration::from_secs(30)) {
+        match handle.read_bulk(ep_in, &mut buf, READ_TIMEOUT) {
             Ok(n) => {
                 reader.feed(&buf[..n]);
                 while let Some(frame) = reader.try_read_frame()? {
                     handle_frame(frame, injector.as_ref());
                 }
             }
-            Err(rusb::Error::Timeout) => continue,
+            Err(rusb::Error::Timeout) => {}
             Err(e) => return Err(e.into()),
         }
+
+        if last_health_check.elapsed() >= HEALTH_CHECK_INTERVAL {
+            last_health_check = Instant::now();
+            check_video_health(&video_alive, x11, active_output.as_ref())?;
+        }
     }
+}
+
+/// Detects the two live-failure modes found in ADR 0032: the video
+/// encoder having died (its writer thread sets `video_alive` to `false`
+/// on exit) or the tabscreen output's real position/mode having drifted
+/// out from under `video.rs`/`input.rs`'s capture/injection targets
+/// (a RandR change made elsewhere, e.g. via arandr). Either one returns
+/// `Err`, which unwinds `run_one_connection` and drops `active_output` --
+/// the outer loop in `main()` then reconnects fresh, re-running
+/// `display::activate()` against the *current* layout rather than the
+/// stale one this connection started with.
+fn check_video_health(
+    video_alive: &Option<Arc<AtomicBool>>,
+    x11: Option<&(RustConnection, u32)>,
+    active_output: Option<&display::ActiveOutput>,
+) -> anyhow::Result<()> {
+    if let Some(alive) = video_alive {
+        if !alive.load(Ordering::Relaxed) {
+            anyhow::bail!("video encoder died mid-connection, forcing reconnect to recover");
+        }
+    }
+
+    if let (Some((conn, root)), Some(active)) = (x11, active_output) {
+        match active.current_rect(conn, *root) {
+            Ok(Some(live)) => {
+                let expected = active.rect;
+                if live.x != expected.x
+                    || live.y != expected.y
+                    || live.width != expected.width
+                    || live.height != expected.height
+                {
+                    anyhow::bail!(
+                        "tabscreen output geometry drifted from {expected:?} to {live:?} \
+                         (likely a real-monitor layout change) -- forcing reconnect to \
+                         re-activate at the correct position"
+                    );
+                }
+            }
+            Ok(None) => anyhow::bail!(
+                "tabscreen output was deactivated outside this daemon (e.g. via arandr) \
+                 -- forcing reconnect to reactivate it"
+            ),
+            Err(e) => log::warn!("failed to check tabscreen output geometry, skipping this check: {e:#}"),
+        }
+    }
+    Ok(())
 }
 
 /// Reads CONTROL frames until the client's `DISPLAY_INFO` (Phase 5,
@@ -251,11 +334,17 @@ fn wait_for_display_info(
     }
 }
 
-fn video_writer_loop(handle: Arc<DeviceHandle<GlobalContext>>, ep_out: u8, stream: video::VideoStream) {
+fn video_writer_loop(
+    handle: Arc<DeviceHandle<GlobalContext>>,
+    ep_out: u8,
+    stream: video::VideoStream,
+    alive: Arc<AtomicBool>,
+) {
     loop {
         let Some(nal) = stream.recv() else {
             log::warn!("video encoder ended (ffmpeg exited)");
             stream.stop();
+            alive.store(false, Ordering::Relaxed);
             return;
         };
         let frame = match protocol::encode_frame(Channel::Video, &nal) {
@@ -268,6 +357,7 @@ fn video_writer_loop(handle: Arc<DeviceHandle<GlobalContext>>, ep_out: u8, strea
         if let Err(e) = handle.write_bulk(ep_out, &frame, Duration::from_secs(5)) {
             log::warn!("video write failed, stopping encoder: {e:#}");
             stream.stop();
+            alive.store(false, Ordering::Relaxed);
             return;
         }
     }

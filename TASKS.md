@@ -955,7 +955,21 @@ during live validation, in
 
 ## Phase 7 — Reliability & Polish
 
-- [ ] Graceful handling of encode/decode errors and dropped frames.
+- [x] Automatic recovery from a dead video encoder or a live output
+      position drift (the exact failure hit in ADR 0032, e.g. toggling a
+      real monitor via arandr mid-connection). A periodic health check
+      (`main.rs`'s `check_video_health`, every 5s) forces a reconnect —
+      reusing `display::activate()`'s existing position recomputation
+      rather than new incremental repositioning logic. Live-validated by
+      reproducing the actual bug (`xrandr --pos` on the live output) and
+      confirming full automatic recovery in ~6s, with a second test
+      confirming no false-positive reconnects when nothing actually
+      drifted. Full writeup in
+      [docs/adr/0033-automatic-recovery-from-dead-encoder-and-output-drift.md](docs/adr/0033-automatic-recovery-from-dead-encoder-and-output-drift.md).
+- [ ] Graceful handling of remaining encode/decode error cases and
+      dropped frames (e.g. per-frame Android-side decode errors) — the
+      encoder-death/output-drift cases above are covered, this is what's
+      still open.
 - [ ] Session logging on both ends for field debugging (USB-level tools
       per `CLAUDE.md`, since network tools don't apply). On the Android
       side, don't rely on `logcat` alone — confirmed unreliable for this

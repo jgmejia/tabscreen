@@ -56,6 +56,33 @@ pub struct ActiveOutput {
     shifted: Vec<(String, i32, i32)>,
 }
 
+impl ActiveOutput {
+    /// Queries this output's current live geometry directly from X11, for
+    /// drift detection against `self.rect`. A RandR change made outside
+    /// this daemon (e.g. the user toggling a real monitor via arandr)
+    /// moves or turns off outputs without going through `activate()`/
+    /// `Drop` at all -- confirmed live (2026-08-20): deactivating a real
+    /// monitor shifted this output to a new position, leaving `video.rs`'s
+    /// capture still reading the stale old offset until `ffmpeg` itself
+    /// hard-failed. Returns `None` if the output currently has no active
+    /// CRTC (turned off, or the mode was otherwise cleared).
+    pub fn current_rect(&self, conn: &RustConnection, root: u32) -> anyhow::Result<Option<OutputRect>> {
+        let resources = conn.randr_get_screen_resources_current(root)?.reply()?;
+        for &output in &resources.outputs {
+            let info = conn.randr_get_output_info(output, resources.config_timestamp)?.reply()?;
+            if info.name != self.name.as_bytes() || info.crtc == 0 {
+                continue;
+            }
+            let crtc = conn.randr_get_crtc_info(info.crtc, resources.config_timestamp)?.reply()?;
+            if crtc.mode == 0 {
+                return Ok(None);
+            }
+            return Ok(Some(OutputRect { x: crtc.x, y: crtc.y, width: crtc.width, height: crtc.height }));
+        }
+        Ok(None)
+    }
+}
+
 impl Drop for ActiveOutput {
     fn drop(&mut self) {
         for (name, x, y) in &self.shifted {
