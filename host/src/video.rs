@@ -47,15 +47,23 @@ const GOP: &str = "60";
 /// `configure()` hint: confirmed working (`released>0 errors=0`) at
 /// 1818x1136 (2,065,248px) and confirmed failing (`CodecException
 /// errorCode=1100`) at 1820x1138 (2,071,160px) -- under 6,000px apart,
-/// good to about 0.3% precision. This constant is the exact
-/// confirmed-good value, not a rounded-down guess. Its vendor-declared
-/// capability XML claims a far higher ceiling (max size 4096x2176,
-/// block-count up to 34816) and is not a reliable source of truth here.
-/// Aspect ratio is preserved via uniform scaling rather than width-only
-/// clamping (an earlier version of this constant capped width alone,
-/// which doesn't hold: the failure is pixel-count-driven, not
-/// width-driven, confirmed independent of orientation too).
-const MAX_ENCODE_PIXELS: u64 = 1818 * 1136;
+/// good to about 0.3% precision. Its vendor-declared capability XML
+/// claims a far higher ceiling (max size 4096x2176, block-count up to
+/// 34816) and is not a reliable source of truth here. Aspect ratio is
+/// preserved via uniform scaling rather than width-only clamping (an
+/// earlier version of this constant capped width alone, which doesn't
+/// hold: the failure is pixel-count-driven, not width-driven, confirmed
+/// independent of orientation too).
+///
+/// Deliberately *not* the literal confirmed-good product (1818*1136 =
+/// 2,065,248): the uniform-scale formula below (`sqrt` then truncate)
+/// rounds down, so that literal value actually reconstructs to 1816x1136,
+/// not 1818x1136 (see ADR 0027). This is 1819*1137, the smallest area
+/// that survives the same rounding to land back on the real target,
+/// 1818x1136 -- ADR 0027's exact largest confirmed-good probe, chosen
+/// over the slightly smaller 1816x1136 for a marginal sharpness gain
+/// (docs/adr/0036).
+const MAX_ENCODE_PIXELS: u64 = 1819 * 1137;
 
 pub struct VideoStream {
     child: Child,

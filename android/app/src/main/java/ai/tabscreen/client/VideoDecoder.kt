@@ -20,7 +20,7 @@ private const val MIME_TYPE = "video/avc"
 // this hint must match it exactly (not just be "big enough"), since
 // MediaCodec's Surface-decode path still uses it for buffer sizing.
 // Update both together if that scaling ever changes.
-private const val HINT_WIDTH = 1816
+private const val HINT_WIDTH = 1818
 private const val HINT_HEIGHT = 1136
 
 /**
@@ -28,7 +28,7 @@ private const val HINT_HEIGHT = 1136
  * VIDEO channel (docs/wire-protocol.md): one Annex-B NAL unit per [feed]
  * call, start code included.
  */
-class VideoDecoder(surface: Surface) {
+class VideoDecoder(surface: Surface, private val onOutputSizeKnown: ((width: Int, height: Int) -> Unit)? = null) {
     private var codec: MediaCodec? = null
     @Volatile private var running = false
     private var outputThread: Thread? = null
@@ -84,6 +84,12 @@ class VideoDecoder(surface: Surface) {
                 if (outIndex >= 0) {
                     c.releaseOutputBuffer(outIndex, true)
                     outputBuffersReleased++
+                } else if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    val fmt = c.outputFormat
+                    onOutputSizeKnown?.invoke(
+                        fmt.getInteger(MediaFormat.KEY_WIDTH),
+                        fmt.getInteger(MediaFormat.KEY_HEIGHT),
+                    )
                 }
             } catch (e: Exception) {
                 errorCount++

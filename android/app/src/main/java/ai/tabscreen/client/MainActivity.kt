@@ -9,17 +9,24 @@ import ai.tabscreen.client.protocol.TouchAction
 import ai.tabscreen.client.protocol.TouchEvent
 import ai.tabscreen.client.protocol.encodeFrame
 import android.app.Activity
+import android.app.AlertDialog
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.hardware.usb.UsbAccessory
 import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import android.view.Gravity
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.Surface
 import android.view.SurfaceHolder
@@ -27,6 +34,9 @@ import android.view.SurfaceView
 import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.TextView
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -34,6 +44,14 @@ import java.io.FileOutputStream
 private const val TAG = "tabscreen"
 private const val ACTION_USB_PERMISSION = "ai.tabscreen.client.USB_PERMISSION"
 private const val PROTOCOL_VERSION = 1
+
+// Solarized Dark (Ethan Schoonover, https://ethanschoonover.com/solarized/)
+// base tones, darkest to lightest -- frame-color presets for users of that
+// theme, alongside the plain black/gray/white options.
+private const val SOLARIZED_BASE03 = 0xFF002B36.toInt()
+private const val SOLARIZED_BASE02 = 0xFF073642.toInt()
+private const val SOLARIZED_BASE01 = 0xFF586E75.toInt()
+private const val SOLARIZED_BASE0 = 0xFF839496.toInt()
 
 /**
  * Phase 1/3/4 scope: opens the AOA accessory, completes the CONTROL
@@ -44,6 +62,7 @@ private const val PROTOCOL_VERSION = 1
 class MainActivity : Activity() {
     private lateinit var statusView: TextView
     private lateinit var surfaceView: SurfaceView
+    private lateinit var root: FrameLayout
     private lateinit var usbManager: UsbManager
     private var fd: ParcelFileDescriptor? = null
     private var readerThread: Thread? = null
@@ -55,9 +74,23 @@ class MainActivity : Activity() {
     @Volatile private var videoFrameCount = 0
     @Volatile private var connectionStatus = "Starting..."
 
+    private var displayMode = DisplayMode.FILL
+    private var frameColor = Color.BLACK
+    @Volatile private var lastKnownVideoSize: Pair<Int, Int>? = null
+
+    private val volumeDownHandler = Handler(Looper.getMainLooper())
+    private var volumeDownLongPressTriggered = false
+    private val volumeDownLongPressRunnable = Runnable {
+        volumeDownLongPressTriggered = true
+        showSettingsDialog()
+    }
+
     private val surfaceCallback = object : SurfaceHolder.Callback {
         override fun surfaceCreated(holder: SurfaceHolder) {
-            videoDecoder = VideoDecoder(holder.surface)
+            videoDecoder = VideoDecoder(holder.surface) { w, h ->
+                lastKnownVideoSize = w to h
+                runOnUiThread { applyDisplayMode() }
+            }
         }
 
         override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
@@ -120,14 +153,18 @@ class MainActivity : Activity() {
         statusView.setTextColor(android.graphics.Color.WHITE)
         statusView.setBackgroundColor(0x80000000.toInt())
 
+        displayMode = Settings.displayMode(this)
+        frameColor = Settings.frameColor(this)
+
         surfaceView = SurfaceView(this)
         surfaceView.holder.addCallback(surfaceCallback)
 
-        val root = FrameLayout(this)
+        root = FrameLayout(this)
         root.addView(surfaceView)
         root.addView(statusView)
         root.setOnTouchListener { view, event -> handleTouch(view, event) }
         setContentView(root)
+        applyDisplayMode()
         setStatus("Starting...")
 
         usbManager = getSystemService(USB_SERVICE) as UsbManager
@@ -386,6 +423,123 @@ class MainActivity : Activity() {
 
     private fun showStatusOverlay() {
         runOnUiThread { statusView.visibility = View.VISIBLE }
+    }
+
+    /**
+     * FILL stretches the decode buffer to fill the panel (default,
+     * matches a real monitor's edge-to-edge look). NATIVE renders it at
+     * its real decoded size instead, avoiding the extra upscale-blur pass
+     * that adds on top of the encoder's own downscale (docs/adr/0035) --
+     * at the cost of a visible frame/border, painted in `frameColor`.
+     * NATIVE silently behaves like FILL until the real decoded size is
+     * known (first frame not decoded yet).
+     */
+    private fun applyDisplayMode() {
+        root.setBackgroundColor(frameColor)
+        val size = lastKnownVideoSize
+        surfaceView.layoutParams = if (displayMode == DisplayMode.NATIVE && size != null) {
+            FrameLayout.LayoutParams(size.first, size.second, Gravity.CENTER)
+        } else {
+            FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        }
+    }
+
+    /**
+     * Opened via a long-press on Volume Down (see onKeyDown/onKeyUp) --
+     * every touch on this window is otherwise forwarded to the host as
+     * remote input, so a touch gesture can't double as a local menu
+     * trigger without stealing it from the remote session.
+     */
+    private fun showSettingsDialog() {
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(48, 32, 48, 16)
+        }
+
+        val fillRadio = RadioButton(this).apply { text = "Fit to screen"; id = View.generateViewId() }
+        val nativeRadio = RadioButton(this).apply { text = "Native pixels (sharper, shows a frame)"; id = View.generateViewId() }
+        val radioGroup = RadioGroup(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(fillRadio)
+            addView(nativeRadio)
+            check(if (displayMode == DisplayMode.NATIVE) nativeRadio.id else fillRadio.id)
+        }
+        layout.addView(radioGroup)
+
+        layout.addView(TextView(this).apply {
+            text = "Frame color"
+            setPadding(0, 32, 0, 8)
+        })
+        var selectedColor = frameColor
+        val colorRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val presets = listOf(
+            Color.BLACK, Color.DKGRAY, Color.WHITE,
+            SOLARIZED_BASE03, SOLARIZED_BASE02, SOLARIZED_BASE01, SOLARIZED_BASE0,
+        )
+        val swatches = presets.map { color ->
+            View(this).apply {
+                layoutParams = LinearLayout.LayoutParams(80, 80).apply { setMargins(8, 0, 8, 0) }
+            }
+        }
+        fun restyleSwatches() {
+            swatches.forEachIndexed { i, view ->
+                val selected = presets[i] == selectedColor
+                view.background = GradientDrawable().apply {
+                    setColor(presets[i])
+                    // A visible border on every swatch, not just the light
+                    // ones -- otherwise white (or any color close to the
+                    // dialog's own background) is indistinguishable from
+                    // the gap between swatches. The selected swatch gets a
+                    // thicker cyan ring on top of that so the current pick
+                    // is unambiguous.
+                    setStroke(if (selected) 8 else 3, if (selected) Color.CYAN else Color.LTGRAY)
+                }
+            }
+        }
+        swatches.forEachIndexed { i, view ->
+            view.setOnClickListener {
+                selectedColor = presets[i]
+                restyleSwatches()
+            }
+            colorRow.addView(view)
+        }
+        restyleSwatches()
+        layout.addView(colorRow)
+
+        AlertDialog.Builder(this)
+            .setTitle("tabscreen settings")
+            .setView(layout)
+            .setPositiveButton("Save") { _, _ ->
+                displayMode = if (radioGroup.checkedRadioButtonId == nativeRadio.id) DisplayMode.NATIVE else DisplayMode.FILL
+                frameColor = selectedColor
+                Settings.setDisplayMode(this, displayMode)
+                Settings.setFrameColor(this, frameColor)
+                applyDisplayMode()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /**
+     * A short press still behaves like a normal volume-down press (not
+     * consumed); holding past the threshold opens settings instead and
+     * suppresses that press's release so it doesn't also register as an
+     * ordinary volume change.
+     */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN && event.repeatCount == 0) {
+            volumeDownLongPressTriggered = false
+            volumeDownHandler.postDelayed(volumeDownLongPressRunnable, 800)
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+            volumeDownHandler.removeCallbacks(volumeDownLongPressRunnable)
+            if (volumeDownLongPressTriggered) return true
+        }
+        return super.onKeyUp(keyCode, event)
     }
 
     /**
