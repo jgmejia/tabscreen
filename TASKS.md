@@ -992,6 +992,16 @@ during live validation, in
       "Known limitations" section (single validated hardware pairing,
       X11-only, right-side placement only, one tablet at a time, 90Hz
       not requested, GDM greeter unverified).
+- [x] Public GitHub repo prep: `LICENSE` (MIT — confirmed no dependency,
+      direct or transitive, forces a different choice; `libusb` is LGPL-2.1
+      but linked dynamically, its designed safe harbor, and `ffmpeg` is
+      invoked as an external subprocess, never linked/bundled), a logo
+      (`docs/assets/logo.svg`), `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`
+      (Contributor Covenant), `.github/` issue/PR templates, and a CI
+      workflow (`.github/workflows/ci.yml`, host `cargo build`/`test` +
+      Android `assembleDebug`/unit tests) with a status badge in
+      `README.md`. Repo itself not yet created on GitHub — that step is
+      being handled directly, not through this session.
 - [ ] Update `CLAUDE.md` with any architecture decisions finalized during
       implementation that diverge from the current plan.
 - [ ] Versioned release/tag of host daemon + Android client.

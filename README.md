@@ -1,4 +1,11 @@
-# tabscreen
+<p align="center">
+  <img src="docs/assets/logo.svg" alt="tabscreen" width="420">
+</p>
+
+<p align="center">
+  <a href="https://github.com/jgmejia/tabscreen/actions/workflows/ci.yml"><img src="https://github.com/jgmejia/tabscreen/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
+</p>
 
 Use an Android tablet as a second monitor for a Linux desktop, connected
 over USB — no Wi-Fi, no network stack, no `adb`. The tablet enumerates as
@@ -197,3 +204,13 @@ sources" for that source app the first time.
   `tabscreen.service` (already auto-starting, plus its own encoder-death/
   output-drift recovery — [ADR 0033](docs/adr/0033-automatic-recovery-from-dead-encoder-and-output-drift.md))
   comes back on its own within seconds, no manual steps needed.
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for how to report bugs, propose
+changes, and this project's expectations around ADRs. This community
+follows the [Contributor Covenant](CODE_OF_CONDUCT.md).
+
+## License
+
+[MIT](LICENSE)

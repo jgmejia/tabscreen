@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 210" width="720" height="210" role="img" aria-labelledby="tabscreen-logo-title">
+  <title id="tabscreen-logo-title">tabscreen</title>
+
+  <!-- Monitor (isometric box: right face = bezel, left face = side, top face = lid) -->
+  <g stroke="#1e293b" stroke-width="1.5" stroke-linejoin="round">
+    <polygon points="33.00,107.00 115.27,154.50 115.27,82.50 33.00,35.00" fill="#64748b"/>
+    <polygon points="33.00,107.00 20.01,114.50 20.01,42.50 33.00,35.00" fill="#334155"/>
+    <polygon points="33.00,35.00 115.27,82.50 102.28,90.00 20.01,42.50" fill="#94a3b8"/>
+    <polygon points="38.76,105.28 109.51,146.13 109.51,84.22 38.76,43.36" fill="#14b8a6"/>
+  </g>
+  <g stroke="#1e293b" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round">
+    <line x1="74.14" y1="130.75" x2="74.14" y2="146.75"/>
+    <polygon points="74.14,133.75 96.65,146.75 74.14,159.75 51.62,146.75" fill="#64748b"/>
+  </g>
+
+  <!-- Cable, isometric ground direction -->
+  <g fill="none" stroke="#334155" stroke-width="5" stroke-linecap="round">
+    <path d="M127,88 C170,84 210,82 256,86"/>
+    <path d="M127,102 C170,100 210,98 256,100"/>
+  </g>
+  <g fill="#334155">
+    <rect x="113" y="82" width="14" height="12" rx="2.5"/>
+    <rect x="113" y="96" width="14" height="12" rx="2.5"/>
+    <rect x="256" y="80" width="14" height="12" rx="2.5"/>
+    <rect x="256" y="94" width="14" height="12" rx="2.5"/>
+  </g>
+
+  <!-- Tablet (isometric box, taller/narrower/thinner than the monitor) -->
+  <g stroke="#1e293b" stroke-width="1.5" stroke-linejoin="round">
+    <polygon points="268.00,112.00 304.37,133.00 304.37,45.00 268.00,24.00" fill="#64748b"/>
+    <polygon points="268.00,112.00 261.07,116.00 261.07,28.00 268.00,24.00" fill="#334155"/>
+    <polygon points="268.00,24.00 304.37,45.00 297.44,49.00 261.07,28.00" fill="#94a3b8"/>
+    <polygon points="270.18,107.98 302.19,126.46 302.19,49.02 270.18,30.54" fill="#14b8a6"/>
+  </g>
+  <circle cx="286.19" cy="119.86" r="3.2" fill="#1e293b"/>
+
+  <!-- Wordmark -->
+  <text x="358" y="118" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="60" font-weight="600" fill="#64748b">tabscreen</text>
+</svg>
