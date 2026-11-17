@@ -1,10 +1,17 @@
 <p align="center">
-  <img src="docs/assets/logo.svg" alt="tabscreen" width="420">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.svg">
+    <img src="docs/assets/logo.svg" alt="tabscreen" width="520">
+  </picture>
 </p>
 
 <p align="center">
   <a href="https://github.com/jgmejia/tabscreen/actions/workflows/ci.yml"><img src="https://github.com/jgmejia/tabscreen/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
+</p>
+
+<p align="center">
+  <img src="docs/assets/hero.jpg" alt="A laptop and an Android tablet side by side, both showing the tabscreen logo across the two screens" width="900">
 </p>
 
 Use an Android tablet as a second monitor for a Linux desktop, connected
